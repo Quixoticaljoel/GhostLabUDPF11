@@ -171,6 +171,9 @@ td.purple{color:var(--purple)} td.green{color:var(--green)} td.yellow{color:var(
 .step b{display:block;font-size:14px;font-weight:600}
 .step small{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .step small:empty{display:none}
+#stBridge{grid-template-columns:24px minmax(0,1fr) auto}
+#dForget{height:30px}
+#dForget.armed{color:var(--text,#fff);border-color:var(--rival)}
 .step .ic{width:22px;height:22px;border-radius:50%;border:2px solid var(--line2);display:grid;place-items:center;font-weight:700;font-size:13px;line-height:1}
 .step.idle{opacity:.6}
 .step.wait .ic{border-top-color:var(--rival);animation:spin .9s linear infinite}
