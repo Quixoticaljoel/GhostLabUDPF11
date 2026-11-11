@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ghost Lab Server Setup</title>
+<meta name="theme-color" content="#0a0c10">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css">
+<style>
+  html,body{height:auto;overflow:auto}
+  body{padding:calc(env(safe-area-inset-top) + 20px) calc(var(--sr) + 16px) 60px calc(var(--sl) + 16px)}
+  .wrap{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+  h1{font-size:24px;margin:6px 0 2px}
+  h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+  h2 .n{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--rival);color:#1a0712;font-size:13px;font-weight:700;flex:none}
+  .lead{color:var(--muted);margin:0}
+  .box{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:10px}
+  label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+  input,textarea{height:46px;border-radius:10px;border:1px solid var(--line2);background:var(--bg);padding:0 12px;font-size:15px;color:var(--text);width:100%}
+  textarea{height:auto;padding:10px 12px;font-family:var(--mono);font-size:14px;line-height:1.5}
+  .suffix{display:flex;align-items:center;gap:0}
+  .suffix input{border-radius:10px 0 0 10px}
+  .suffix span{height:46px;display:grid;place-items:center;padding:0 12px;border:1px solid var(--line2);border-left:0;border-radius:0 10px 10px 0;background:var(--panel);color:var(--muted);font-family:var(--mono);font-size:13px;white-space:nowrap}
+  .hint{font-size:12px;color:var(--dim)}
+  .err{color:var(--red);font-size:13px;min-height:0}
+  .err:empty{display:none}
+  .out{display:none;flex-direction:column;gap:14px}
+  .out.on{display:flex}
+  pre{margin:0;max-height:260px;overflow:auto;background:var(--bg);border:1px solid var(--line2);border-radius:10px;padding:12px;font-family:var(--mono);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#cdd3de}
+  .row2{display:flex;gap:8px;flex-wrap:wrap}
+  .row2 .btn{flex:1;min-width:140px}
+  .admin{border-color:#4b3566}
+  .admin code{font-size:16px;color:var(--purple)}
+  .link{font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--player)}
+  table{font-size:13px}
+  td{vertical-align:top}
+  td:first-child{color:var(--text);font-weight:600}
+  .note{font-size:13px;color:var(--muted);border-left:3px solid var(--yellow);padding:4px 0 4px 10px}
+  a{color:var(--player)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="brand">GHOST<span>LAB</span></div>
+    <h1>Server setup helper</h1>
+    <p class="lead">Fill this in and it writes everything for your free Oracle Cloud server: the script to paste in, your admin code, and every driver's link and code. <b>It all stays in this browser</b>; nothing is sent anywhere.</p>
+  </div>
+
+  <div class="box">
+    <h2><span class="n">1</span>Your DuckDNS name</h2>
+    <p class="hint">Get these free at <a href="https://www.duckdns.org" target="_blank" rel="noopener">duckdns.org</a>: add a subdomain, then copy the token shown at the top of the page.</p>
+    <label>Subdomain
+      <div class="suffix"><input id="sub" placeholder="apex-ghost-4821" autocomplete="off" autocapitalize="off" spellcheck="false"><span>.duckdns.org</span></div>
+    </label>
+    <label>Token
+      <input id="token" placeholder="a1b2c3d4-e5f6-7890-abcd-ef1234567890" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+  </div>
+
+  <div class="box">
+    <h2><span class="n">2</span>Drivers</h2>
+    <p class="hint">One name per line. Each gets their own UDP port and access code. You can add or remove people later from the website.</p>
+    <textarea id="drivers" rows="4" spellcheck="false">Me</textarea>
+  </div>
+
+  <div class="box">
+    <h2><span class="n">3</span>Your GitHub</h2>
+    <label>Repository (owner/name)
+      <input id="repo" placeholder="your-username/ghost-lab" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <label>GitHub Pages address (optional)
+      <input id="pages" placeholder="https://your-username.github.io/ghost-lab/" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <p class="hint">Leave blank and everyone's links open the app straight from your server instead. That works just as well, and doesn't need GitHub Pages at all.</p>
+  </div>
+
+  <div class="err" id="err"></div>
+  <button class="btn primary" id="go">Create my server script</button>
+
+  <div class="out" id="out">
+    <div class="box admin">
+      <h2>Your admin link (keep it to yourself)</h2>
+      <p class="hint">Sees every driver, live and saved laps, and lets you add or remove drivers. Open it once on your phone and add it to your home screen.</p>
+      <div>Admin code: <code id="adminCode"></code></div>
+      <div class="link" id="adminLink"></div>
+      <div class="row2"><button class="btn" id="copyAdmin">Copy admin link</button></div>
+    </div>
+
+    <div class="box">
+      <h2>The script to paste into Oracle</h2>
+      <p class="hint">You'll paste this when creating the server (step 5 of the guide).</p>
+      <pre id="script"></pre>
+      <div class="row2"><button class="btn primary" id="copyScript">Copy script</button></div>
+    </div>
+
+    <div class="box">
+      <h2>Everyone's details</h2>
+      <p class="hint">Send each person their link. Their console's <b>UDP IP</b> is your server's public IP, which Oracle shows once the server exists and the app shows under Game settings. Each person uses their own <b>UDP port</b>.</p>
+      <table id="table"></table>
+      <div class="row2"><button class="btn" id="download">Download all as a text file</button><button class="btn" id="copyAll">Copy all</button></div>
+    </div>
+
+    <p class="note">These codes are saved in this browser, so you can come back to this page. <button class="chip" id="reset">Start over with new codes</button></p>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+(() => {
+const $ = id => document.getElementById(id);
+const ALPHA = 'abcdefghjkmnpqrstuvwxyz23456789';
+const PORT = 20777;
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _.'-]{0,23}$/;
+const store = {
+  get(k, d){ try { const v = localStorage.getItem('ghostlab.setup.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v){ try { localStorage.setItem('ghostlab.setup.' + k, JSON.stringify(v)); } catch {} },
+};
+function code(n){ const a = new Uint32Array(n); crypto.getRandomValues(a); return [...a].map(x => ALPHA[x % ALPHA.length]).join(''); }
+function toast(msg){ const t = $('toast'); t.textContent = msg; t.className = 'toast show ok'; clearTimeout(toast.t); toast.t = setTimeout(() => t.className = 'toast', 2500); }
+async function copy(text){
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch {} t.remove(); return ok;
+}
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+// ---- prefill ----
+const saved = store.get('form', null);
+const gh = /^([a-z0-9-]+)\.github\.io$/i.exec(location.hostname);
+const repoGuess = gh ? `${gh[1]}/${location.pathname.split('/').filter(Boolean)[0] || ''}` : '';
+const pagesGuess = gh ? location.origin + location.pathname.replace(/setup\.html$/, '') : '';
+$('repo').value = saved ? saved.repo : repoGuess.replace(/\/$/, '');
+$('pages').value = saved ? saved.pages : pagesGuess;
+if (saved){ $('sub').value = saved.sub; $('token').value = saved.token; $('drivers').value = saved.drivers; }
+
+function read(){
+  const sub = $('sub').value.trim().toLowerCase().replace(/\.duckdns\.org$/, '').replace(/^https?:\/\//, '');
+  const token = $('token').value.trim();
+  const repo = $('repo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/$/, '');
+  let pages = $('pages').value.trim(); if (pages && !pages.endsWith('/')) pages += '/';
+  const names = $('drivers').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const errs = [];
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(sub)) errs.push('Enter your DuckDNS subdomain (letters, numbers and dashes).');
+  if (!/^[A-Za-z0-9-]{20,64}$/.test(token)) errs.push('Paste your DuckDNS token (it looks like a1b2c3d4-e5f6-…).');
+  if (!/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo)) errs.push('Enter your repository as owner/name, e.g. alex/ghost-lab.');
+  if (pages && !/^https:\/\/[^\s]+\/$/.test(pages)) errs.push('Enter your GitHub Pages address, starting with https://');
+  if (!names.length) errs.push('Add at least one driver.');
+  const bad = names.filter(n => !NAME_RE.test(n));
+  if (bad.length) errs.push(`Use short names with letters and numbers: ${bad.join(', ')}`);
+  const lower = names.map(n => n.toLowerCase());
+  if (new Set(lower).size !== lower.length) errs.push('Each driver needs a different name.');
+  if (names.length > 23) errs.push('Up to 23 drivers.');
+  return {sub, token, repo, pages, names, errs};
+}
+
+function build(auto){
+  const f = read();
+  $('err').innerHTML = f.errs.map(esc).join('<br>');
+  if (f.errs.length){ $('out').classList.remove('on'); return; }
+  store.set('form', {sub: f.sub, token: f.token, repo: f.repo, pages: f.pages, drivers: $('drivers').value});
+  const codes = store.get('codes', {});
+  if (!codes.__admin) codes.__admin = code(10);
+  const drivers = f.names.map((name, i) => {
+    const k = name.toLowerCase();
+    if (!codes[k]) codes[k] = code(8);
+    return {name, code: codes[k], port: PORT + i};
+  });
+  store.set('codes', codes);
+  const domain = `${f.sub}.duckdns.org`;
+  const link = c => f.pages ? `${f.pages}?server=${domain}&key=${c}` : `https://${domain}/?key=${c}`;
+  const list = drivers.map(d => `${d.name}:${d.code}`).join(',');
+
+  const script = `#!/bin/bash
+# Ghost Lab server - made by the Ghost Lab setup helper on ${new Date().toISOString().slice(0, 10)}
+# Paste into Oracle Cloud: Create instance > Advanced options > Management > Initialization script.
+LOG=/var/log/ghostlab-setup.log
+exec > "$LOG" 2>&1
+set -x
+export DEBIAN_FRONTEND=noninteractive
+# While it installs, a progress page is shown at http://YOUR-SERVER-IP
+SD=/run/ghostlab-status; mkdir -p "$SD"
+status() {
+  extra=""
+  [ -n "$2" ] && extra="<p>What the server said:</p><pre style='white-space:pre-wrap;font-size:12px;color:#8992a5'>$(tail -n 40 "$LOG" | sed 's/&/\\&amp;/g; s/</\\&lt;/g')</pre>"
+  printf '<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><meta http-equiv=refresh content=15><title>Ghost Lab setup</title><body style="font:16px system-ui,sans-serif;background:#0a0c10;color:#e7eaf0;padding:20px;max-width:640px"><h2>Ghost Lab setup</h2><p style="font-size:18px">%s</p><p style="color:#8992a5">Updated %s UTC. This page refreshes itself.</p>%s' "$1" "$(date -u +%H:%M)" "$extra" > "$SD/index.html"
+}
+serve() { (cd "$SD" && exec python3 -m http.server 80 >/dev/null 2>&1) & SERVE_PID=$!; }
+stop_serving() { kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null; }
+fail() { status "Problem: $1" log; exit 1; }
+iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT || true
+status "Step 1 of 4: the server has started."
+serve
+retry() { for _ in 1 2 3 4 5 6 7 8 9 10; do "$@" && return 0; sleep 20; done; return 1; }
+status "Step 2 of 4: waiting for Ubuntu's own start-up updates, then installing tools. On the free server this can take 10-20 minutes."
+retry apt-get update -y || fail "couldn't update Ubuntu. Does this server have internet access (a public IP, in the public subnet)?"
+retry apt-get install -y git curl python3 || fail "couldn't install the tools Ghost Lab needs."
+U=ubuntu; id "$U" >/dev/null 2>&1 || U=opc
+status "Step 3 of 4: downloading Ghost Lab from GitHub."
+rm -rf "/home/$U/ghost-lab"
+retry sudo -u "$U" git clone --depth 1 ${shq('https://github.com/' + f.repo + '.git')} "/home/$U/ghost-lab" || fail ${shq("couldn't download Ghost Lab from github.com/" + f.repo + ". Is the repository public?")}
+cd "/home/$U/ghost-lab" || fail "the download is missing."
+status "Step 4 of 4: installing Ghost Lab, HTTPS and DuckDNS. In a few minutes your admin link will work."
+stop_serving
+if ! SUDO_USER="$U" bash server/install.sh --cloud \\
+  --domain ${shq(domain)} \\
+  --duckdns-token ${shq(f.token)} \\
+${f.pages ? `  --pages ${shq(f.pages)} \\
+` : ''}  --drivers ${shq(list)} \\
+  --admin-code ${shq(codes.__admin)}; then
+  serve
+  fail "the Ghost Lab installer stopped. The details below show why."
+fi
+echo "Ghost Lab setup finished"
+`;
+  $('script').textContent = script;
+  $('adminCode').textContent = codes.__admin;
+  $('adminLink').textContent = link(codes.__admin);
+  $('table').innerHTML = '<tr><th>Driver</th><th>UDP port</th><th>Code</th></tr>' + drivers.map(d =>
+    `<tr><td>${esc(d.name)}</td><td>${d.port}</td><td><code>${d.code}</code></td></tr><tr><td colspan="3" class="link" style="border-top:0">${esc(link(d.code))}</td></tr>`).join('');
+
+  const details = `GHOST LAB - server ${domain}\n\nADMIN (keep private)\n  Link: ${link(codes.__admin)}\n  Code: ${codes.__admin}\n\n` +
+    drivers.map(d => `${d.name}\n  Open on your phone: ${link(d.code)}\n  Access code: ${d.code}\n  Console: UDP Telemetry On, Broadcast Off, Send Rate 60 Hz, Format 2026\n  UDP IP Address: (your server's public IP)\n  UDP Port: ${d.port}`).join('\n\n') + '\n';
+  $('copyScript').onclick = async () => toast(await copy(script) ? 'Script copied' : 'Select the script and copy it');
+  $('copyAdmin').onclick = async () => toast(await copy(link(codes.__admin)) ? 'Admin link copied' : 'Couldn\'t copy');
+  $('copyAll').onclick = async () => toast(await copy(details) ? 'Copied everyone\'s details' : 'Couldn\'t copy');
+  $('download').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([details.replace(/\n/g, '\r\n')], {type: 'text/plain'}));
+    a.download = `ghost-lab-${f.sub}.txt`; document.body.appendChild(a); a.click(); a.remove();
+  };
+  $('out').classList.add('on');
+  if (!auto) $('out').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+$('go').onclick = () => build(false);
+let armed = 0;
+$('reset').onclick = () => {
+  if (Date.now() - armed > 4000){ armed = Date.now(); $('reset').textContent = 'Tap again: new codes for everyone'; toast('Only do this before you create the server'); setTimeout(() => { $('reset').textContent = 'Start over with new codes'; }, 4000); return; }
+  armed = 0; $('reset').textContent = 'Start over with new codes'; store.set('codes', {}); build(false); toast('New codes made');
+};
+if (saved) build(true);
+})();
+</script>
+</body>
+</html>

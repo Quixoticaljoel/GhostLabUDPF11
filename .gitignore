@@ -1,0 +1,9 @@
+laps/
+__pycache__/
+*.pyc
+.DS_Store
+
+# server settings and access codes never belong in the repo
+drivers.json
+*.env
+server/*.json
