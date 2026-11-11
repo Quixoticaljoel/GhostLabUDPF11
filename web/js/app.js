@@ -553,6 +553,7 @@ function updateDetect(){
   go.textContent = live ? 'Open dashboard' : S.laps.length ? 'View saved laps' : 'Open dashboard';
   $('dRemote').hidden = !(IS_HTTPS || location.protocol === 'file:') || Conn.state === 'open' || (needKey && !/^localhost|^127\./.test(Conn.host));
   $('dKey').hidden = !needKey;
+  $('dForget').hidden = !(Conn.state === 'open' || store.get('server', '') || keyFor(Conn.host));
   if (needKey){
     $('dKeyMsg').textContent = keyFor(Conn.host) ? 'That access code didn’t work. Check it and try again. It was printed when the server was set up.'
       : 'This Ghost Lab server is protected. The code was shown when the server was set up, and it’s in the link it printed.';
@@ -635,6 +636,18 @@ function showDetect(){
 $('dGo').onclick = openDashboard;
 $('keyForm').onsubmit = e => { e.preventDefault(); const k = $('keyInput').value.trim(); if (k) Conn.retryWithKey(k); };
 $('pill').onclick = showDetect;
+let forgetArmed = 0;
+$('dForget').onclick = () => {              // forget this server and code on this phone
+  if (Date.now() - forgetArmed > 4000){
+    forgetArmed = Date.now(); $('dForget').textContent = 'Tap again to disconnect';
+    setTimeout(() => { $('dForget').textContent = 'Disconnect'; }, 4000); return;
+  }
+  const host = Conn.host;
+  Conn.stop();
+  for (const h of [host, store.get('server', '')]) if (h){ setKey(h, ''); delete VIEWS[h]; }
+  store.set('views', VIEWS); store.set('server', ''); store.set('bridgeAddr', '');
+  location.replace(location.pathname);
+};
 $('remoteForm').onsubmit = e => {
   e.preventDefault();
   let a = normHost($('remoteAddr').value);
