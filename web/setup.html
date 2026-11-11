@@ -177,6 +177,8 @@ function build(auto){
   const link = c => f.pages ? `${f.pages}?server=${domain}&key=${c}` : `https://${domain}/?key=${c}`;
   const list = drivers.map(d => `${d.name}:${d.code}`).join(',');
 
+  // the progress page is public, so blank out the token and every code in what it shows
+  const hide = [f.token, codes.__admin, ...drivers.map(d => d.code)].map(x => `s/${x}/(hidden)/g`).join('; ');
   const script = `#!/bin/bash
 # Ghost Lab server - made by the Ghost Lab setup helper on ${new Date().toISOString().slice(0, 10)}
 # Paste into Oracle Cloud: Create instance > Advanced options > Management > Initialization script.
@@ -188,7 +190,7 @@ export DEBIAN_FRONTEND=noninteractive
 SD=/run/ghostlab-status; mkdir -p "$SD"
 status() {
   extra=""
-  [ -n "$2" ] && extra="<p>What the server said:</p><pre style='white-space:pre-wrap;font-size:12px;color:#8992a5'>$(tail -n 40 "$LOG" | sed 's/&/\\&amp;/g; s/</\\&lt;/g')</pre>"
+  [ -n "$2" ] && extra="<p>What the server said:</p><pre style='white-space:pre-wrap;font-size:12px;color:#8992a5'>$(tail -n 40 "$LOG" | sed ${shq(hide)} | sed 's/&/\\&amp;/g; s/</\\&lt;/g')</pre>"
   printf '<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width"><meta http-equiv=refresh content=15><title>Ghost Lab setup</title><body style="font:16px system-ui,sans-serif;background:#0a0c10;color:#e7eaf0;padding:20px;max-width:640px"><h2>Ghost Lab setup</h2><p style="font-size:18px">%s</p><p style="color:#8992a5">Updated %s UTC. This page refreshes itself.</p>%s' "$1" "$(date -u +%H:%M)" "$extra" > "$SD/index.html"
 }
 serve() { (cd "$SD" && exec python3 -m http.server 80 >/dev/null 2>&1) & SERVE_PID=$!; }

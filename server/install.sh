@@ -64,7 +64,7 @@ if ! command -v python3 >/dev/null || ! command -v curl >/dev/null; then
   command -v apt-get >/dev/null && apt-get update -qq
   apt_install python3 curl
 fi
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' || fail "Python 3.9 or newer is needed"
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)' || fail "Python 3.7 or newer is needed (use the Ubuntu 22.04 or 24.04 image)"
 
 # ---- settings (keep existing values unless new ones were given) --------------
 old() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | head -n1 || true; }
