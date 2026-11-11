@@ -42,11 +42,29 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # --------------------------------------------------------------------------
 # Packet layouts (F1 23 / 24 / 25 / 26 share the 29-byte header)
 # --------------------------------------------------------------------------
-NUM_CARS = 22
+NUM_CARS = 24                             # room for the largest grid (2026 format)
 HEADER = struct.Struct("<HBBBBBQfIIBB")   # packetFormat ... secondaryPlayerCarIndex
-MOTION = struct.Struct("<6f6h6f")         # CarMotionData, 60 bytes
-TELEM_HEAD = struct.Struct("<H3fBbHB")    # first 19 bytes of CarTelemetryData
-TT_SET = struct.Struct("<BBIIIIBBBBBB")   # TimeTrialDataSet, 24 bytes
+MOTION = struct.Struct("<6f6h6f")         # CarMotionData up to 2025, 60 bytes
+TELEM_HEAD = struct.Struct("<H3fBbHB")    # first 19 bytes of CarTelemetryData (all formats)
+TT_SET = struct.Struct("<BBIIIIBBBBBB")   # TimeTrialDataSet up to 2025, 24 bytes
+
+
+class Layout:
+    """Per-format differences in the game's packets."""
+    def __init__(self, cars, motion, g_scale, tt, name_off, sector_off):
+        self.cars, self.motion, self.g_scale, self.tt = cars, motion, g_scale, tt
+        self.name_off = name_off          # where the name starts in ParticipantData
+        self.sector_off = sector_off      # sector 2/3 start distances in the Session packet (None = last 8 bytes)
+
+
+LAYOUT_OLD = Layout(22, MOTION, 1.0, TT_SET, 7, None)
+# F1 26 / F1 25 2026 Season Pack (format 2026): 24 cars, quantised g-forces,
+# 16-bit driver/team ids, and the session packet grew past the sector distances
+LAYOUT_2026 = Layout(24, struct.Struct("<6f9h3f"), 1 / 1000, struct.Struct("<BHIIIIBBBBBB"), 10, 745)
+
+
+def layout_for(fmt):
+    return LAYOUT_2026 if fmt >= 2026 else LAYOUT_OLD
 
 PKT_MOTION, PKT_SESSION, PKT_LAP = 0, 1, 2
 PKT_PARTICIPANTS, PKT_TELEMETRY, PKT_TIMETRIAL = 4, 6, 14
@@ -183,24 +201,25 @@ class State:
         self.active_ip, self.active_last = ip, now
         self.packets += 1
         self.packet_format = fmt
+        L = layout_for(fmt)
         if uid and uid != self.session_uid:
             self.reset_session(uid)
-        if pidx < NUM_CARS:
+        if pidx < L.cars:
             self.player_idx = pidx
         b = HEADER.size
         try:
             if pid == PKT_MOTION:
-                self._motion(data, b)
+                self._motion(data, b, L)
             elif pid == PKT_LAP:
-                self._lap(data, b, fmt)
+                self._lap(data, b, fmt, L)
             elif pid == PKT_TELEMETRY:
-                self._telemetry(data, b, stime)
+                self._telemetry(data, b, stime, L)
             elif pid == PKT_SESSION:
-                self._session(data, b, fmt)
+                self._session(data, b, fmt, L)
             elif pid == PKT_PARTICIPANTS:
-                self._participants(data, b)
+                self._participants(data, b, L)
             elif pid == PKT_TIMETRIAL:
-                self._timetrial(data, b)
+                self._timetrial(data, b, L)
         except struct.error:
             pass  # truncated or unexpected layout - skip this packet
 
@@ -209,45 +228,55 @@ class State:
         """Only you and the two ghosts are ever shown, so skip decoding the other cars."""
         return {i for i in (self.player_idx, self.pb_idx, self.rival_idx) if i < NUM_CARS}
 
-    def _motion(self, data, b):
-        if len(data) < b + MOTION.size * NUM_CARS:
+    def _motion(self, data, b, L):
+        m = L.motion
+        if len(data) < b + m.size * L.cars:
             return
         for i in self.wanted():
-            v = MOTION.unpack_from(data, b + i * MOTION.size)
+            if i >= L.cars:
+                continue
+            v = m.unpack_from(data, b + i * m.size)
             c = self.cars[i]
             c["x"], c["y"], c["z"] = v[0], v[1], v[2]
             c["fx"], c["fy"], c["fz"] = v[6] / 32767, v[7] / 32767, v[8] / 32767
-            c["gLat"], c["gLon"] = v[12], v[13]
+            c["gLat"], c["gLon"] = v[12] * L.g_scale, v[13] * L.g_scale
 
-    def _lap(self, data, b, fmt):
-        stride = (len(data) - b - 2) // NUM_CARS
+    def _lap(self, data, b, fmt, L):
+        stride = (len(data) - b - 2) // L.cars
         if stride < 36:
             return
         dist_off, pos_off = (20, 32) if fmt >= 2024 else (18, 30)   # F1 23 lacks two minute bytes
         self.pb_idx, self.rival_idx = data[-2], data[-1]
         for i in self.wanted():
+            if i >= L.cars:
+                continue
             o = b + i * stride
             last, cur = struct.unpack_from("<II", data, o)
             s1ms, s1m, s2ms, s2m = struct.unpack_from("<HBHB", data, o + 8)
             dist, = struct.unpack_from("<f", data, o + dist_off)
             _pos, lapnum, _pit, _npit, sector, invalid = struct.unpack_from("<6B", data, o + pos_off)
-            self.cars[i].update(lastLap=last, curLap=cur, s1=s1m * 60000 + s1ms,
+            c = self.cars[i]
+            if i == self.player_idx:
+                c["curLap"] = cur
+            c.update(lastLap=last, gameLap=cur, s1=s1m * 60000 + s1ms,
                                 s2=s2m * 60000 + s2ms, d=dist, lapNum=lapnum,
                                 sector=sector, invalid=invalid)
 
-    def _telemetry(self, data, b, stime):
-        stride = (len(data) - b - 3) // NUM_CARS
+    def _telemetry(self, data, b, stime, L):
+        stride = (len(data) - b - 3) // L.cars
         if stride < TELEM_HEAD.size:
             return
         for i in self.wanted():
+            if i >= L.cars:
+                continue
             sp, thr, steer, brk, _cl, gear, rpm, drs = TELEM_HEAD.unpack_from(data, b + i * stride)
             self.cars[i].update(speed=sp, throttle=thr, steer=steer, brake=brk,
                                 gear=gear, rpm=rpm, drs=drs)
         self._sample(stime)
 
-    def _session(self, data, b, fmt):
+    def _session(self, data, b, fmt, L):
         _w, _tt, _at, _tl, tlen, stype, tid = struct.unpack_from("<BbbBHBb", data, b)
-        s2, s3 = struct.unpack_from("<ff", data, len(data) - 8)
+        s2, s3 = struct.unpack_from("<ff", data, L.sector_off if L.sector_off else len(data) - 8)
         ok = 0 < s2 < s3 < tlen
         names = SESSIONS_24 if fmt >= 2024 else SESSIONS_23
         new = {"trackId": tid, "trackName": track_name(tid), "trackLength": tlen,
@@ -260,18 +289,19 @@ class State:
             self.session = new
             self.outbox.append({"type": "session", "session": new})
 
-    def _participants(self, data, b):
-        stride = (len(data) - b - 1) // NUM_CARS
-        if stride < 39:
+    def _participants(self, data, b, L):
+        stride = (len(data) - b - 1) // L.cars
+        n0 = L.name_off
+        if stride < n0 + 32:
             return
-        for i in range(NUM_CARS):
+        for i in range(L.cars):
             o = b + 1 + i * stride
-            self.names[i] = data[o + 7:o + 39].split(b"\0")[0].decode("utf-8", "replace")
+            self.names[i] = data[o + n0:o + n0 + 32].split(b"\0")[0].decode("utf-8", "replace")
 
-    def _timetrial(self, data, b):
+    def _timetrial(self, data, b, L):
         keys = ("carIdx", "teamId", "lapTime", "s1", "s2", "s3", "tractionControl",
                 "gearbox", "abs", "equalPerformance", "customSetup", "valid")
-        sets = [dict(zip(keys, TT_SET.unpack_from(data, b + k * TT_SET.size))) for k in range(3)]
+        sets = [dict(zip(keys, L.tt.unpack_from(data, b + k * L.tt.size))) for k in range(3)]
         tt = {"sessionBest": sets[0], "personalBest": sets[1], "rival": sets[2]}
         if tt != self.tt:
             self.tt = tt
@@ -307,9 +337,14 @@ class State:
                 self._learn_sectors(c)
             if d < 0:
                 continue                                # still before the line
-            if self.lap_start[role] is None:
-                self.lap_start[role] = stime
-            t = c.get("curLap") or round((stime - self.lap_start[role]) * 1000)
+            if self.lap_start[role] is None:              # crossed the line: back-date by the distance past it
+                self.lap_start[role] = stime - d / max(c["speed"] / 3.6, 1)
+            clock = round((stime - self.lap_start[role]) * 1000)
+            if role == "player":
+                t = c.get("curLap") or clock
+            else:                                         # the game's timer for ghost cars isn't reliable in 2026
+                t = clock
+                c["curLap"] = t
             self.buf[role].append([
                 int(t), round(d, 2), round(c["x"], 2), round(c["y"], 2), round(c["z"], 2),
                 c["speed"], round(c["throttle"], 3), round(c["brake"], 3), round(c["steer"], 3),
@@ -367,6 +402,7 @@ class State:
         stamp = fmt_lap(lap["lapTime"]).replace(":", "-").replace(".", "-")
         path = os.path.join(self.laps_dir, f"{slug}_{lap['role']}_{stamp}_{int(lap['created'])}.csv")
         meta = {k: lap[k] for k in ("role", "name", "lapTime", "invalid", "trackId", "trackName")}
+        meta.update({k: self.session.get(k) or "" for k in ("trackLength", "sector2", "sector3")})
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 f.write("# " + ",".join(f"{k}={str(v).replace(',', ' ')}" for k, v in meta.items()) + "\n")
@@ -457,10 +493,14 @@ def lap_meta(line: str) -> dict:
             meta[k] = v
     out = {"role": meta.get("role", ""), "name": meta.get("name", ""), "trackName": meta.get("trackName", ""),
            "invalid": meta.get("invalid", "").lower() == "true"}
-    try:
-        out["lapTime"] = int(float(meta.get("lapTime", 0)))
-    except ValueError:
-        out["lapTime"] = 0
+    for k, conv in (("lapTime", int), ("trackId", int), ("trackLength", int), ("sector2", float), ("sector3", float)):
+        try:
+            out[k] = conv(float(meta.get(k, "")))
+        except ValueError:
+            out[k] = None
+    out["lapTime"] = out["lapTime"] or 0
+    if out["role"] in ("pb", "rival") and 0 < out["lapTime"] < 20000:
+        out["lapTime"], out["suspect"] = 0, True      # saved before the ghost timing fix: the app re-times it
     return out
 
 
@@ -554,7 +594,7 @@ class Hub:
                     await self.reply(writer, 401, b'{"error":"access code required"}', "application/json",
                                      extra="Access-Control-Allow-Origin: *\r\n")
                 else:
-                    await self.api(writer, method, path, state)
+                    await self.api(writer, method, path, state, admin)
             else:
                 await self.static(writer, method, path)
         except (ConnectionError, OSError):
@@ -588,8 +628,57 @@ class Hub:
             body = f.read()
         await self.reply(writer, 200, body, ctype, head_only=method == "HEAD")
 
-    async def api(self, writer, method, path, state):
-        """Saved laps: GET /api/saved (list) and GET /api/saved/<file>.csv"""
+    def library(self, state, admin):
+        """Every saved lap, grouped by track. Drivers see their own; the admin code sees everyone's."""
+        root = os.path.realpath(self.fleet.args.laps)
+        folders = []                                     # (driver, folder path, url prefix)
+        if admin and self.fleet.multi:
+            names = {slugify(d["name"]): d["name"] for d in self.drivers}
+            try:
+                subs = sorted(os.listdir(root))
+            except OSError:
+                subs = []
+            for sub in subs:
+                full = os.path.join(root, sub)
+                if os.path.isdir(full) and not sub.startswith("."):
+                    folders.append((names.get(sub, sub), full, f"/api/lib/{urllib.parse.quote(sub)}/"))
+        else:
+            folders.append((state.info.get("driver") or "", os.path.realpath(state.laps_dir), "/api/saved/"))
+        tracks = {}
+        count = 0
+        for driver, folder, prefix in folders:
+            try:
+                files = os.listdir(folder)
+            except OSError:
+                continue
+            for name in files:
+                if not name.lower().endswith(".csv") or count >= 5000:
+                    continue
+                full = os.path.join(folder, name)
+                try:
+                    mtime = os.stat(full).st_mtime
+                    with open(full, encoding="utf-8", errors="replace") as f:
+                        meta = lap_meta(f.readline())
+                except OSError:
+                    continue
+                count += 1
+                tname = meta.get("trackName") or "Unknown track"
+                t = tracks.setdefault(tname, {"trackName": tname, "trackId": meta.get("trackId"), "trackLength": None,
+                                              "sector2": None, "sector3": None, "laps": [], "last": 0})
+                for k in ("trackLength", "sector2", "sector3"):
+                    t[k] = t[k] or meta.get(k)
+                t["last"] = max(t["last"], round(mtime))
+                t["laps"].append(dict(meta, driver=driver, url=prefix + urllib.parse.quote(name), modified=round(mtime)))
+        out = sorted(tracks.values(), key=lambda t: -t["last"])
+        for t in out:
+            t["laps"].sort(key=lambda l: (l["lapTime"] or 9e9))
+            t["drivers"] = sorted({l["driver"] for l in t["laps"] if l["driver"]})
+            valid = [l["lapTime"] for l in t["laps"] if l["lapTime"] and not l["invalid"] and l["role"] == "player"]
+            t["best"] = min(valid) if valid else None
+        return {"admin": bool(admin), "tracks": out}
+
+    async def api(self, writer, method, path, state, admin=False):
+        """Saved laps: GET /api/saved (list), /api/saved/<file>.csv and /api/library (grouped by track)"""
         cors = "Access-Control-Allow-Origin: *\r\n"
         if method not in ("GET", "HEAD"):
             return await self.reply(writer, 405, b"Method not allowed", "text/plain", extra=cors)
@@ -615,6 +704,21 @@ class Hub:
             items.sort(key=lambda m: -m["modified"])
             body = json.dumps(items[:500], separators=(",", ":")).encode()
             return await self.reply(writer, 200, body, "application/json", head_only, cors)
+        if path.rstrip("/") == "/api/library":
+            body = json.dumps(self.library(state, admin), separators=(",", ":")).encode()
+            return await self.reply(writer, 200, body, "application/json", head_only, cors)
+        if path.startswith("/api/lib/") and admin:          # admin: any driver's folder, including removed drivers
+            rest = urllib.parse.unquote(path[len("/api/lib/"):])
+            folder, _, name = rest.partition("/")
+            root = os.path.realpath(self.fleet.args.laps)
+            full = os.path.realpath(os.path.join(root, folder, name))
+            if (not folder or folder.startswith(".") or "/" in name or "\\" in name or name.startswith(".")
+                    or not name.lower().endswith(".csv") or os.path.dirname(full) != os.path.join(root, folder)
+                    or not os.path.isfile(full)):
+                return await self.reply(writer, 404, b"Not found", "text/plain", extra=cors)
+            with open(full, "rb") as f:
+                body = f.read()
+            return await self.reply(writer, 200, body, "text/csv; charset=utf-8", head_only, cors)
         if path.startswith("/api/saved/"):
             name = urllib.parse.unquote(path[len("/api/saved/"):])
             full = os.path.realpath(os.path.join(laps_dir, name))

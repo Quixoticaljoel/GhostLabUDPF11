@@ -42,6 +42,11 @@
         <div class="carchips"><span class="carchip" data-role="player">You</span><span class="carchip" data-role="pb">PB ghost</span><span class="carchip" data-role="rival">Rival ghost</span></div></div></li>
     </ol>
 
+    <div id="dTracks" class="dcard libcard" hidden>
+      <div class="libhead"><b id="dTracksTitle">Your tracks</b><span class="muted small" id="dTracksSub"></span></div>
+      <div id="trackList" class="libbox"></div>
+    </div>
+
     <div class="actions">
       <button id="dGo" class="btn primary" disabled>Open dashboard</button>
       <button id="dOpen" class="btn ghost">Open lap files…</button>
@@ -94,6 +99,7 @@
     <div class="brand">GHOST<span>LAB</span></div>
     <div id="trackName"></div>
     <select id="driverSel" class="drvsel" aria-label="Driver to view" hidden></select>
+    <button id="rpBtn" class="rpbtn" type="button" hidden>Replay</button>
     <button id="pill" class="pill" title="Telemetry status">Connecting…</button>
   </header>
 
@@ -157,6 +163,7 @@
       <div class="card">
         <h3>Laps <span class="spacer"></span>
           <button id="autoBtn" class="chip tog on" title="Show the newest lap of each car automatically">Auto</button>
+          <button id="tracksBtn" class="chip">Tracks</button>
           <button id="importBtn" class="chip">Import</button>
           <button id="exportBtn" class="chip">Export</button>
         </h3>
@@ -165,6 +172,24 @@
       </div>
     </section>
   </main>
+
+  <div id="replay" hidden>
+    <div class="rprow">
+      <button id="rpPlay" class="rpplay" type="button" aria-label="Play"><svg viewBox="0 0 24 24" fill="currentColor"><path id="rpIcon" d="M8 5v14l11-7z"/></svg></button>
+      <input id="rpSlider" type="range" min="0" max="10000" step="1" value="0" aria-label="Replay position">
+      <span id="rpTime" class="rptime">0:00.000</span>
+    </div>
+    <div class="rprow rpopts">
+      <select id="rpSpeed" class="chip" aria-label="Replay speed">
+        <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
+      </select>
+      <label class="rpslot" style="--c:var(--player)"><i></i>You<select id="rpSlot-player" aria-label="Lap shown as You"></select></label>
+      <label class="rpslot" style="--c:var(--pb)"><i></i>PB<select id="rpSlot-pb" aria-label="Lap shown as PB ghost"></select></label>
+      <label class="rpslot" style="--c:var(--rival)"><i></i>Rival<select id="rpSlot-rival" aria-label="Lap shown as Rival ghost"></select></label>
+      <label class="rpslot ref"><span class="tag ref">REF</span><select id="rpRef" aria-label="Reference lap for the delta"></select></label>
+      <button id="rpExit" class="chip" type="button">Back to live</button>
+    </div>
+  </div>
 
   <nav id="tabs" aria-label="Views">
     <button data-tab="map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17c-2-3 0-8 4-9s4 3 7 2 4-4 5-1-2 7-6 9-8 2-10-1z"/><circle cx="9" cy="12" r="1.4" fill="currentColor"/></svg>Map</button>

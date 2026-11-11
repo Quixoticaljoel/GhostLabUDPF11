@@ -236,6 +236,7 @@ UNIT
 [Unit]
 Description=Ghost Lab: check GitHub for updates once a day
 [Timer]
+OnBootSec=3min
 OnCalendar=*-*-* 04:00:00
 RandomizedDelaySec=1h
 Persistent=true

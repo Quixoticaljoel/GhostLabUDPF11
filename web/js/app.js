@@ -23,15 +23,16 @@ const S = {
   auto: store.get('auto', true), live: {}, showLive: true, track: null, hoverD: null, xr: null, xrUser: false,
   liveLap: {id: 'live', role: 'player', name: 'Live lap', samples: [], D: [], color: '#ffffff'},
   mirror: store.get('mirror', false), labels: true, lines: true, cam: store.get('cam', 'orbit'), follow: 'player',
-  importSeq: 0, tvIdx: -1, chartsDirty: true, lastFrame: 0,
+  importSeq: 0, tvIdx: -1, chartsDirty: true, lastFrame: 0, liveAt: 0,
+  rp: {on: false, auto: false, touched: false, dismissed: false, playing: false, dirty: false, t: 0, dur: 0, speed: 1, slots: {player: null, pb: null, rival: null}},
   chOn: Object.assign({speed: true, throttle: true, brake: true, steer: true, gear: true, rpm: false, delta: true}, store.get('channels', {})),
 };
 const isDesk = () => mqDesk.matches;
 const paneVisible = p => isDesk() || S.tab === p;
 
 // ---------- formatting ----------
-function fmtLap(ms){ if (ms == null || !isFinite(ms) || ms <= 0) return '–'; const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000; return `${m}:${s.toFixed(3).padStart(6, '0')}`; }
-function fmtSec(ms){ if (ms == null || !isFinite(ms) || ms <= 0) return '–'; return ms >= 60000 ? fmtLap(ms) : (ms / 1000).toFixed(3); }
+function fmtLap(ms){ if (ms == null || !isFinite(ms) || ms <= 0 || ms >= 3600000) return '–'; const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000; return `${m}:${s.toFixed(3).padStart(6, '0')}`; }
+function fmtSec(ms){ if (ms == null || !isFinite(ms) || ms <= 0 || ms >= 3600000) return '–'; return ms >= 60000 ? fmtLap(ms) : (ms / 1000).toFixed(3); }
 function fmtDelta(s){ if (s == null || !isFinite(s)) return '–'; return (s > 0 ? '+' : s < 0 ? '−' : '±') + Math.abs(s).toFixed(3); }
 function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[ch])); }
@@ -61,8 +62,36 @@ function prepLap(lap){
   const keep = []; let last = -Infinity;
   for (const r of lap.samples){ const d = r[F.d]; if (isFinite(d) && d > last + 0.05){ keep.push(r); last = d; } }
   lap.samples = keep; lap.D = keep.map(r => r[F.d]);
+  retime(lap);
   lap.color = shade(ROLE_COLOR[lap.role] || ROLE_COLOR.import, S.laps.filter(l => l.role === lap.role).length);
   return lap;
+}
+function retime(lap){                    // ghost laps saved before the timing fix: rebuild the clock from distance and speed
+  const s = lap.samples, t = F.t, d = F.d, v = F.speed;
+  if (t == null || v == null || s.length < 2) return;
+  let bad = false;
+  for (let i = 1; i < s.length; i++) if (s[i][t] < s[i - 1][t] - 50){ bad = true; break; }
+  if (!bad) return;
+  let acc = s[0][d] / Math.max(s[0][v] / 3.6, 1) * 1000;
+  for (let i = 0; i < s.length; i++){
+    if (i) acc += (s[i][d] - s[i - 1][d]) / Math.max((s[i][v] + s[i - 1][v]) / 7.2, 1) * 1000;
+    s[i][t] = Math.round(acc);
+  }
+  const last = s[s.length - 1], L = (lap.trackInfo && lap.trackInfo.trackLength) || S.session.trackLength || last[d];
+  const est = last[t] + Math.max(0, L - last[d]) / Math.max(last[v] / 3.6, 1) * 1000;
+  if (!(lap.lapTime > est * 0.97 && lap.lapTime < est * 1.03)) lap.lapTime = Math.round(est);
+  lap.retimed = true;
+}
+const viewingSaved = () => !!S.session.fromFile && S.laps.some(l => l.imported);
+function keepTrack(name){                 // a different track: drop laps from the old one
+  if (!name) return;
+  const before = S.laps.length;
+  S.laps = S.laps.filter(l => !l.trackName || l.trackName === name);
+  if (S.laps.length === before && !(S.track && S.track.lap && S.track.lap.trackName && S.track.lap.trackName !== name)) return;
+  for (const id of [...S.shown]) if (!lapById(id)) S.shown.delete(id);
+  if (!lapById(S.refId)) S.refId = null;
+  if (!lapById(S.cmpId)) S.cmpId = null;
+  clearTrack();
 }
 const lapById = id => id == null ? null : (id === 'live' ? S.liveLap : S.laps.find(l => l.id === id) || null);
 function trackLen(){
@@ -337,7 +366,7 @@ function onFrame(m){
     const fw = V(c.fx, c.fy, c.fz); if (fw.lengthSq() > .01) ud.fwd.copy(fw.normalize());
   }
   const p = m.cars.player, L = S.liveLap;
-  if (p && p.d != null){
+  if (p && p.d != null && !m.replay){
     const lastD = L.D.length ? L.D[L.D.length - 1] : -Infinity;
     if (p.d < lastD - 20){ L.samples = []; L.D = []; }
     if (p.d >= 0 && p.d > (L.D.length ? L.D[L.D.length - 1] : -Infinity) + .05){
@@ -352,16 +381,20 @@ function onMessage(m){
   switch (m.type){
     case 'hello':
       if (m.fields) setFields(m.fields);
-      if ((m.session && m.session.trackName) || !S.session.fromFile) S.session = m.session || {};
+      const saved = viewingSaved();
+      S.liveSession = m.session || {};
+      if (!saved && ((m.session && m.session.trackName) || !S.session.fromFile)){ S.session = m.session || {}; keepTrack(S.session.trackName); }
       S.tt = m.tt;
       S.laps = S.laps.filter(l => l.imported);
       for (const id of [...S.shown]) if (!lapById(id)) S.shown.delete(id);
-      (m.laps || []).forEach(l => addLap(l, true));
+      (m.laps || []).forEach(l => { if (!saved || l.trackName === S.session.trackName) addLap(l, true); });
+      loadLibrary();
       if (m.status) S.status = m.status;
       S.admin = m.admin || null; renderDriverSel();
       afterLapsChanged(); updateSessionUI(); updateDetect(); break;
     case 'drivers': if (S.admin){ S.admin = m; renderDriverSel(); if (!$('sheet').hidden && $('sheet').dataset.kind === 'drivers') refreshDriversSheet(m); } break;
     case 'reset':
+      if (viewingSaved()){ S.tt = null; break; }
       S.laps = S.laps.filter(l => l.imported); S.tt = null; if (!S.session.fromFile) S.session = {};
       for (const id of [...S.shown]) if (!lapById(id)) S.shown.delete(id);
       if (!lapById(S.refId)) S.refId = null;
@@ -369,15 +402,21 @@ function onMessage(m){
       S.liveLap.samples = []; S.liveLap.D = []; S.xrUser = false; S.xr = null;
       clearTrack(); afterLapsChanged(); updateSessionUI(); break;
     case 'session': {
+      S.liveSession = m.session || {};
+      if (viewingSaved()) break;                  // looking at a saved track: live data waits
       const prev = S.session; S.session = m.session || {};
+      if (prev.trackName && S.session.trackName && prev.trackName !== S.session.trackName){ keepTrack(S.session.trackName); afterLapsChanged(); LIB.stale = true; }
       if (S.track && (prev.sector2 !== S.session.sector2 || prev.sector3 !== S.session.sector3)) buildTrack(S.track.lap);
       if (!S.xrUser) S.xr = null;
       S.laps.forEach(l => l.sectors = lapSectors(l));
       updateSessionUI(); renderLaps(); S.chartsDirty = true; break;
     }
     case 'tt': S.tt = m.tt; break;
-    case 'lap': addLap(m.lap, false); afterLapsChanged(); break;
-    case 'frame': onFrame(m); break;
+    case 'lap':
+      LIB.stale = true;
+      if (viewingSaved() && m.lap.trackName && m.lap.trackName !== S.session.trackName) break;
+      addLap(m.lap, false); afterLapsChanged(); break;
+    case 'frame': S.liveAt = performance.now(); if (!S.rp.on) onFrame(m); break;
     case 'status': S.status = m; if (S.admin && m.bridge) S.viewing = m.bridge.driver; updateDetect(); break;
   }
 }
@@ -399,7 +438,7 @@ function addLap(lap, quiet){
     S.cmpId = other ? other.id : null;
   }
 }
-function afterLapsChanged(){ ensureTrack(); rebuildLines(); colorTrack(); renderLaps(); S.chartsDirty = true; }
+function afterLapsChanged(){ ensureTrack(); rebuildLines(); colorTrack(); renderLaps(); renderReplay(); S.chartsDirty = true; }
 function updateSessionUI(){
   const s = S.session;
   $('trackName').textContent = s.trackName
@@ -549,8 +588,14 @@ function updateDetect(){
 
   // actions
   const go = $('dGo');
-  go.disabled = !(live || (S.laps.length > 0));
-  go.textContent = live ? 'Open dashboard' : S.laps.length ? 'View saved laps' : 'Open dashboard';
+  const nTracks = LIB.data ? LIB.data.tracks.length : 0;
+  go.disabled = !(live || S.laps.length || nTracks);
+  go.textContent = live ? 'Open dashboard' : (S.laps.length || nTracks) ? 'View saved laps' : 'Open dashboard';
+  $('dTracks').hidden = !(Conn.state === 'open' && !needKey && LIB.data && (S.admin || (!live && nTracks)));
+  if (!$('dTracks').hidden) renderLibrary($('trackList'));
+  $('dTracksTitle').textContent = S.admin ? 'All tracks and laps' : 'Your tracks';
+  $('dTracksSub').textContent = LIB.data ? `${nTracks} track${nTracks === 1 ? '' : 's'} · ${LIB.data.tracks.reduce((n, t) => n + t.laps.length, 0)} laps` : '';
+  if (S.view === 'detect' && LIB.stale && Conn.state === 'open') loadLibrary();
   $('dRemote').hidden = !(IS_HTTPS || location.protocol === 'file:') || Conn.state === 'open' || (needKey && !/^localhost|^127\./.test(Conn.host));
   $('dKey').hidden = !needKey;
   $('dForget').hidden = !(Conn.state === 'open' && keyFor(Conn.host));
@@ -633,7 +678,7 @@ function showDetect(){
   const d = $('detect'); d.hidden = false; requestAnimationFrame(() => d.classList.remove('leaving'));
   updateDetect();
 }
-$('dGo').onclick = openDashboard;
+$('dGo').onclick = () => telemetryLive() || !(LIB.data && LIB.data.tracks.length) ? openDashboard() : openLibrary();
 $('keyForm').onsubmit = e => { e.preventDefault(); const k = $('keyInput').value.trim(); if (k) Conn.retryWithKey(k); };
 $('pill').onclick = showDetect;
 let forgetArmed = 0;
@@ -768,7 +813,7 @@ $('lapList').addEventListener('click', e => {
   if (act === 'ref'){ S.refId = id; S.shown.add(id); if (S.cmpId === id) S.cmpId = null; }
   if (act === 'cmp'){ S.cmpId = S.cmpId === id ? null : id; if (S.cmpId) S.shown.add(id); if (S.refId === id) S.refId = null; }
   if (act === 'csv'){ downloadLap(lap); return; }
-  rebuildLines(); colorTrack(); renderLaps(); S.chartsDirty = true;
+  rebuildLines(); colorTrack(); renderLaps(); renderReplay(); if (S.rp.on) S.rp.dirty = true; S.chartsDirty = true;
 });
 function downloadLap(lap){
   const meta = `# role=${lap.role},name=${String(lap.name || '').replace(/,/g, ' ')},lapTime=${lap.lapTime},invalid=${!!lap.invalid},trackId=${lap.trackId ?? ''},trackName=${lap.trackName || S.session.trackName || ''}`;
@@ -1184,7 +1229,7 @@ function chartSeries(){
   const out = [];
   for (const id of S.shown){ const l = lapById(id); if (l) out.push(l); }
   out.sort((a, b) => (a.id === S.refId) - (b.id === S.refId));
-  if (S.showLive && S.liveLap.D.length > 1) out.push(S.liveLap);
+  if (S.showLive && !S.rp.on && S.liveLap.D.length > 1) out.push(S.liveLap);
   return out;
 }
 function xRange(){ if (!S.xr || !S.xrUser) S.xr = [0, trackLen()]; return S.xr; }
@@ -1281,10 +1326,10 @@ function chartGeom(){ const cv = chartsEl.querySelector('canvas'); if (!cv) retu
 function dAtX(clientX){ const g = chartGeom(); if (!g) return null; const [x0, x1] = xRange(); return x0 + (clientX - g.left) / g.width * (x1 - x0); }
 const ptrs = new Map(); let pinch = null, mdrag = null, lastTap = 0;
 chartsEl.addEventListener('pointerdown', e => {
-  if (e.pointerType === 'mouse'){ mdrag = {x: e.clientX, xr: [...xRange()]}; return; }
+  if (e.pointerType === 'mouse'){ if (S.rp.on) rpSeekD(dAtX(e.clientX)); mdrag = {x: e.clientX, xr: [...xRange()]}; return; }
   ptrs.set(e.pointerId, e.clientX);
   if (ptrs.size === 2){ const [a, b] = [...ptrs.values()]; pinch = {da: dAtX(a), db: dAtX(b)}; return; }
-  S.hoverD = dAtX(e.clientX); S.chartsDirty = true;
+  if (S.rp.on) rpSeekD(dAtX(e.clientX)); else { S.hoverD = dAtX(e.clientX); S.chartsDirty = true; }
   const now = performance.now();
   if (now - lastTap < 300){ S.xr = null; S.xrUser = false; S.hoverD = null; }
   lastTap = now;
@@ -1304,7 +1349,7 @@ chartsEl.addEventListener('pointermove', e => {
     const [a, b] = [...ptrs.values()]; if (Math.abs(b - a) < 24) return;
     const g = chartGeom(), scale = (pinch.db - pinch.da) / (b - a), start = pinch.da - (a - g.left) * scale;
     setRange(start, start + g.width * scale);
-  } else if (ptrs.size === 1){ S.hoverD = dAtX(e.clientX); S.chartsDirty = true; }
+  } else if (ptrs.size === 1){ if (S.rp.on) rpSeekD(dAtX(e.clientX)); else { S.hoverD = dAtX(e.clientX); S.chartsDirty = true; } }
 });
 const endPtr = e => { ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = null; if (e.pointerType === 'mouse') mdrag = null; };
 chartsEl.addEventListener('pointerup', endPtr);
@@ -1393,6 +1438,7 @@ let lastT = performance.now(), uiT = 0, slowT = 0, crumbT = 0, chartT = 0;
 function tick(now){
   requestAnimationFrame(tick);
   const dt = Math.min(.1, (now - lastT) / 1000); lastT = now;
+  rpTick(dt);
   const mapOn = S.view === 'dash' && paneVisible('map');
   for (const r of ROLES){
     const car = cars[r]; if (!car.visible) continue;
@@ -1418,9 +1464,232 @@ function tick(now){
     if (S.view === 'dash'){ renderCards(); updateWaiting(); updateFollowChips(); }
     if (!S.track && now - crumbT > 500){ crumbT = now; updateCrumbs(); }
   }
-  if (now - slowT > 500){ slowT = now; updatePill(); if (S.view === 'dash') renderSectors(); }
+  if (now - slowT > 500){ slowT = now; updatePill(); rpAuto(); if (S.view === 'dash') renderSectors(); }
   if (S.view === 'dash' && paneVisible('traces') && S.chartsDirty && (S.hoverD != null || ptrs.size || mdrag || now - chartT > 100)){ chartT = now; drawCharts(); }
 }
+
+
+// =====================================================================
+// Track library: every saved lap on the server, by track
+// =====================================================================
+const LIB = {data: null, stale: true, busy: false, open: new Set()};
+async function loadLibrary(){
+  if (LIB.busy || Conn.state !== 'open') return;
+  LIB.busy = true; LIB.stale = false;
+  try {
+    const r = await fetch(apiUrl('/api/library'), {cache: 'no-store'});
+    if (r.ok){ LIB.data = await r.json(); LIB.key = ''; }
+  } catch {}
+  LIB.busy = false;
+  updateDetect();
+  if ($('libSheet')) renderLibrary($('libSheet'));
+}
+setInterval(() => { if (Conn.state === 'open' && (S.view === 'detect' || $('libSheet'))) LIB.stale = true; }, 60000);
+function libDefaults(t){                  // each driver's fastest lap, plus the fastest PB and rival ghost laps
+  const pick = new Set(), best = new Map(), byTime = (a, b) => (a.invalid - b.invalid) || ((a.lapTime || 9e9) - (b.lapTime || 9e9));
+  const idx = [...t.laps.keys()].sort((a, b) => byTime(t.laps[a], t.laps[b]));
+  for (const i of idx){
+    const l = t.laps[i], k = l.role === 'player' || !ROLE_COLOR[l.role] ? 'p|' + l.driver : l.role;
+    if (!best.has(k)){ best.set(k, i); pick.add(i); }
+  }
+  return pick;
+}
+function renderLibrary(box){
+  const d = LIB.data;
+  if (!d){ box.innerHTML = '<div class="empty">Loading your tracks…</div>'; return; }
+  const key = JSON.stringify([d.tracks.map(t => t.trackName + t.laps.length + t.last), S.liveSession && S.liveSession.trackName, box.id]);
+  if (box.dataset.key === key) return; box.dataset.key = key;
+  if (!d.tracks.length){ box.innerHTML = '<div class="empty">No saved laps yet. Every complete lap is saved here automatically.</div>'; return; }
+  const live = S.liveSession && S.liveSession.trackName;
+  box.innerHTML = d.tracks.map((t, ti) => `<details class="libtrack" data-ti="${ti}"${LIB.open.has(t.trackName) ? ' open' : ''}>
+    <summary><span class="lt-name">${esc(t.trackName)}${t.trackName === live && telemetryLive() ? '<span class="lt-live">LIVE</span>' : ''}</span>
+      <span class="lt-meta">${t.laps.length} lap${t.laps.length === 1 ? '' : 's'}${t.best ? ' · best ' + fmtLap(t.best) : ''} · ${fmtDate(t.last)}${d.admin && t.drivers.length ? ' · ' + esc(t.drivers.join(', ')) : ''}</span></summary>
+    <div class="lt-body"></div></details>`).join('');
+  box.querySelectorAll('.libtrack[open]').forEach(fillTrack);
+}
+function fillTrack(det){
+  const t = LIB.data.tracks[+det.dataset.ti], body = det.querySelector('.lt-body');
+  if (!t || body.dataset.done) return; body.dataset.done = '1';
+  const def = libDefaults(t), groups = new Map();
+  t.laps.forEach((l, i) => { const g = LIB.data.admin ? (l.driver || 'Driver') : ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); });
+  const row = i => { const l = t.laps[i]; return `<label class="svrow"><input type="checkbox" value="${i}"${def.has(i) ? ' checked' : ''}>
+    <span class="sw" style="background:${ROLE_COLOR[l.role] || ROLE_COLOR.import}"></span><span class="svrole">${ROLE_SHORT[l.role] || 'Lap'}</span>
+    <span class="svtime">${fmtLap(l.lapTime)}${l.invalid ? ' <i class="inv">INV</i>' : ''}</span>
+    <span class="svname">${esc(l.name && l.name !== ROLE_LABEL[l.role] ? l.name : '')}</span><span class="svdate">${fmtDate(l.modified)}</span></label>`; };
+  body.innerHTML = [...groups].map(([g, list]) => (g ? `<div class="lt-driver">${esc(g)}</div>` : '') + list.map(row).join('')).join('') +
+    `<div class="lt-actions"><button class="btn primary lt-open" type="button"></button></div>`;
+  const btn = body.querySelector('.lt-open');
+  const count = () => { const k = body.querySelectorAll('input:checked').length; btn.disabled = !k; btn.textContent = k ? `Open ${k} lap${k === 1 ? '' : 's'}` : 'Pick some laps'; };
+  body.addEventListener('change', count); count();
+  btn.onclick = () => openTrack(t, [...body.querySelectorAll('input:checked')].map(i => t.laps[+i.value]), btn);
+}
+function bindLibrary(box){
+  box.addEventListener('toggle', e => {
+    const det = e.target.closest && e.target.closest('.libtrack'); if (!det || !LIB.data) return;
+    const name = LIB.data.tracks[+det.dataset.ti].trackName;
+    if (det.open){ LIB.open.add(name); fillTrack(det); } else LIB.open.delete(name);
+  }, true);
+}
+bindLibrary($('trackList'));
+function openLibrary(){
+  openSheet(S.admin ? 'All tracks and laps' : 'Your tracks', '<div id="libSheet" class="libbox"></div>');
+  bindLibrary($('libSheet')); renderLibrary($('libSheet'));
+  if (LIB.stale || !LIB.data) loadLibrary();
+}
+$('tracksBtn').onclick = openLibrary;
+async function openTrack(t, items, btn){
+  if (!items.length) return;
+  if (btn){ btn.disabled = true; btn.textContent = 'Loading…'; }
+  if (RP.on){ RP.on = false; $('replay').hidden = true; }
+  if (!S.session.fromFile) S.liveSession = S.session;
+  S.laps = []; S.shown.clear(); S.refId = S.cmpId = null; clearTrack();
+  S.session = {trackName: t.trackName, trackId: t.trackId, trackLength: t.trackLength, sector2: t.sector2, sector3: t.sector3, fromFile: true};
+  updateSessionUI();
+  const tot = newTally();
+  await Promise.all(items.map(async it => {
+    try {
+      const r = await fetch(apiUrl(it.url), {cache: 'no-store'});
+      if (!r.ok) throw new Error(r.status);
+      const data = parseLapFile(await r.text(), it.name || 'lap');
+      if (data){ data.laps.forEach(l => { if (it.driver && LIB.data.admin) l.name = `${it.driver}${l.role === 'player' ? '' : ' · ' + (ROLE_SHORT[l.role] || '')}`; }); addImported(data, tot); }
+      else tot.failed.push(it.name || 'lap');
+    } catch { tot.failed.push(it.name || 'lap'); }
+  }));
+  finishImport(tot);
+  closeSheet();
+  RP.slots = {player: null, pb: null, rival: null}; RP.dismissed = false;
+  openDashboard();
+  if (S.laps.length){ rpEnter(false); RP.playing = false; RP.t = 0; RP.dirty = true; }
+}
+
+// =====================================================================
+// Replay: plays recorded laps through the live views (map, Live, traces)
+// =====================================================================
+const RP = S.rp;
+const idOf = v => v === '' || v == null ? null : (isNaN(+v) ? v : +v);
+function lapT(lap){                       // time into the lap (ms) at each sample, never going backwards
+  if (lap._T && lap._T.length === lap.samples.length) return lap._T;
+  let last = 0; lap._T = lap.samples.map(r => (last = Math.max(last, r[F.t] || 0)));
+  return lap._T;
+}
+const lapEnd = lap => { const T = lapT(lap); return T.length ? T[T.length - 1] : 0; };
+const rpName = l => `${l.name && l.name !== ROLE_LABEL[l.role] ? l.name : ROLE_SHORT[l.role] || 'Lap'} ${fmtLap(l.lapTime)}`;
+function rpCarAt(lap, t){
+  const T = lapT(lap), n = T.length; if (n < 2) return null;
+  const i = seek(T, t), a = lap.samples[i], b = lap.samples[i + 1];
+  const u = clamp((t - T[i]) / ((T[i + 1] - T[i]) || 1), 0, 1);
+  const v = k => F[k] == null ? 0 : a[F[k]] + (b[F[k]] - a[F[k]]) * u;
+  const near = k => F[k] == null ? 0 : (u < .5 ? a : b)[F[k]];
+  const cur = clamp(t, 0, T[n - 1]), sec = lap.sectors;
+  return {x: v('x'), y: v('y'), z: v('z'), fx: v('fx'), fy: v('fy'), fz: v('fz'), d: v('d'),
+    speed: Math.round(v('speed')), throttle: v('throttle'), brake: v('brake'), steer: v('steer'), rpm: Math.round(v('rpm')),
+    gear: near('gear'), drs: near('drs'), curLap: cur || null, name: rpName(lap),
+    sector: sec ? (cur < sec[0] ? 0 : cur < sec[0] + sec[1] ? 1 : 2) : 0, s1: sec ? sec[0] : 0, s2: sec ? sec[1] : 0};
+}
+const rpLaps = () => ROLES.map(r => lapById(RP.slots[r])).filter(Boolean);
+function rpPick(){                        // newest lap of each car, unless the viewer already chose
+  for (const r of ROLES) if (!lapById(RP.slots[r])) RP.slots[r] = null;
+  if (ROLES.some(r => RP.slots[r] != null)) return;
+  const fast = (a, b) => (a.invalid - b.invalid) || (a.lapTime - b.lapTime);
+  const latest = role => viewingSaved() ? S.laps.filter(l => l.role === role).sort(fast)[0]   // a saved track: fastest
+    : [...S.laps].reverse().find(l => l.role === role);                                             // live: newest
+  ROLES.forEach(r => { const l = latest(r); RP.slots[r] = l ? l.id : null; });
+  if (ROLES.every(r => RP.slots[r] == null))
+    [...S.laps].sort((a, b) => a.lapTime - b.lapTime).slice(0, 3).forEach((l, i) => { RP.slots[ROLES[i]] = l.id; });
+}
+function rpDur(){ RP.dur = Math.max(0, ...rpLaps().map(lapEnd)); if (RP.t > RP.dur) RP.t = RP.dur; }
+function rpApply(){
+  const m = {replay: true, cars: {}};
+  for (const r of ROLES){ const l = lapById(RP.slots[r]), c = l && rpCarAt(l, RP.t); if (c) m.cars[r] = c; }
+  onFrame(m);
+  rpUI();
+}
+let rpUIKey = '';
+function rpUI(){
+  const pos = RP.dur ? Math.round(RP.t / RP.dur * 10000) : 0;
+  const key = pos + '|' + RP.playing + '|' + RP.dur; if (key === rpUIKey) return; rpUIKey = key;
+  $('rpSlider').value = pos;
+  $('rpTime').textContent = `${RP.t > 0 ? fmtLap(RP.t) : '0:00.000'} / ${fmtLap(RP.dur)}`;
+  $('rpIcon').setAttribute('d', RP.playing ? 'M6 5h4v14H6zM14 5h4v14h-4z' : 'M8 5v14l11-7z');
+  $('rpPlay').setAttribute('aria-label', RP.playing ? 'Pause' : 'Play');
+}
+let rpOptKey = '';
+function renderReplay(){
+  const btn = $('rpBtn');
+  btn.hidden = !S.laps.length && !RP.on;
+  btn.textContent = RP.on ? 'Live' : 'Replay';
+  btn.classList.toggle('on', RP.on);
+  btn.title = RP.on ? 'Back to live data' : 'Replay recorded laps';
+  if (!RP.on) return;
+  rpPick(); rpDur();
+  const key = S.laps.map(l => l.id + ':' + l.lapTime).join(',') + '|' + ROLES.map(r => RP.slots[r]).join(',') + '|' + S.refId;
+  if (key === rpOptKey) return; rpOptKey = key;
+  const opt = (l, sel) => `<option value="${esc(l.id)}"${sel ? ' selected' : ''}>${esc(rpName(l))}${l.trackName && S.session.trackName && l.trackName !== S.session.trackName ? ' · ' + esc(l.trackName) : ''}${l.invalid ? ' (invalid)' : ''}</option>`;
+  const laps = [...S.laps].reverse();
+  for (const r of ROLES)
+    $('rpSlot-' + r).innerHTML = `<option value="">Off</option>` + laps.map(l => opt(l, l.id === RP.slots[r])).join('');
+  $('rpRef').innerHTML = `<option value="">None</option>` + laps.map(l => opt(l, l.id === S.refId)).join('');
+  rpUIKey = ''; rpUI();
+}
+function rpEnter(auto){
+  if (!S.laps.length){ toast('No laps to replay yet. Finish a lap, or import one from Laps.'); return; }
+  RP.on = true; RP.auto = !!auto; RP.touched = false; RP.playing = !auto;
+  if (!auto) RP.t = 0;
+  rpOptKey = ''; renderReplay();
+  rpLaps().forEach(l => S.shown.add(l.id));
+  for (const r of ROLES) cars[r].userData.init = false;
+  S.hoverD = null; $('replay').hidden = false;
+  rebuildLines(); colorTrack(); renderLaps(); resize();
+  rpApply();
+}
+function rpExit(manual){
+  RP.on = false; RP.playing = false; if (manual) RP.dismissed = true;
+  if (viewingSaved() && manual){           // back to the live track
+    S.laps = []; S.shown.clear(); S.refId = S.cmpId = null; S.session = S.liveSession || {}; clearTrack();
+    afterLapsChanged(); updateSessionUI(); Conn.stop(); Conn.auth = null; Conn.start();
+    if (!telemetryLive()) showDetect();
+  }
+  $('replay').hidden = true;
+  S.live = {}; for (const r of ROLES){ cars[r].visible = false; cars[r].userData.init = false; }
+  renderReplay(); resize(); S.chartsDirty = true;
+}
+function rpSeekD(d){                      // tap the traces: jump to where the lead car was at that distance
+  const lead = rpLaps()[0];
+  if (!lead || d == null || !isFinite(d)) return;
+  RP.t = clamp(valAt(lead, 't', clamp(d, lead.D[0], lead.D[lead.D.length - 1])), 0, RP.dur);
+  RP.playing = false; RP.touched = true; RP.dirty = true;
+}
+function rpTick(dt){
+  if (!RP.on) return;
+  if (RP.playing){ RP.t += dt * 1000 * RP.speed; if (RP.t >= RP.dur){ RP.t = RP.dur; RP.playing = false; } RP.dirty = true; }
+  if (RP.dirty){ RP.dirty = false; rpApply(); }
+}
+function rpAuto(){                        // no live data: show the last laps; live data back: return to it
+  if (S.view !== 'dash') return;
+  const live = Conn.state === 'open' && telemetryLive() && performance.now() - S.liveAt < 3000;
+  if (live) RP.dismissed = false;
+  if (!RP.on && !live && !RP.dismissed && S.laps.length && performance.now() - S.liveAt > 4000) rpEnter(true);
+  else if (RP.on && RP.auto && !RP.touched && live) rpExit(false);
+}
+$('rpBtn').onclick = () => RP.on ? rpExit(true) : rpEnter(false);
+$('rpExit').onclick = () => rpExit(true);
+$('rpPlay').onclick = () => {
+  RP.touched = true;
+  if (!RP.playing && RP.t >= RP.dur - 1) RP.t = 0;
+  RP.playing = !RP.playing; RP.dirty = true;
+};
+$('rpSlider').addEventListener('input', e => { RP.t = +e.target.value / 10000 * RP.dur; RP.touched = true; RP.dirty = true; });
+$('rpSpeed').onchange = e => { RP.speed = +e.target.value || 1; RP.touched = true; };
+for (const r of ROLES) $('rpSlot-' + r).onchange = e => {
+  const id = idOf(e.target.value); RP.slots[r] = id; RP.touched = true;
+  if (id != null) S.shown.add(id);
+  rpOptKey = ''; renderReplay(); rebuildLines(); renderLaps(); RP.dirty = true; S.chartsDirty = true;
+};
+$('rpRef').onchange = e => {
+  const id = idOf(e.target.value); S.refId = id; RP.touched = true;
+  if (id != null){ S.shown.add(id); if (S.cmpId === id) S.cmpId = null; }
+  rebuildLines(); colorTrack(); renderLaps(); RP.dirty = true; S.chartsDirty = true;
+};
 
 // ---------- start ----------
 buildChips(); setTab(S.tab); setFollow('player'); setCam(S.cam); renderLaps(); updateSessionUI();

@@ -20,7 +20,7 @@ code{font-family:var(--mono);font-size:.92em;color:var(--player)}
 .brand.big{font-size:15px;letter-spacing:.22em}
 
 /* ---------- shell (phone first) ---------- */
-#app{position:fixed;inset:0;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"top" "panes" "tabs"}
+#app{position:fixed;inset:0;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;grid-template-areas:"top" "panes" "replay" "tabs"}
 header{grid-area:top;display:flex;align-items:center;gap:10px;min-width:0;padding:calc(env(safe-area-inset-top) + 8px) calc(var(--sr) + 12px) 8px calc(var(--sl) + 12px);border-bottom:1px solid var(--line);background:var(--panel)}
 #trackName{flex:1;min-width:0;color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pill{flex:none;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);font-size:12px}
@@ -214,7 +214,8 @@ details.dcard[open] summary::after{content:"−"}
 
 /* ---------- phone landscape: tabs become a side rail ---------- */
 @media (max-width:1023px) and (orientation:landscape) and (max-height:520px){
-  #app{grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"tabs top" "tabs panes"}
+  #app{grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"tabs top" "tabs panes" "tabs replay"}
+  #replay{gap:6px;padding-top:6px;padding-bottom:6px}
   header{padding-top:6px;padding-bottom:6px;padding-left:12px}
   #tabs{grid-template-columns:none;grid-auto-rows:1fr;border-top:0;border-right:1px solid var(--line);padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom) var(--sl);width:calc(68px + var(--sl))}
   #tabs button{min-height:0}
@@ -225,7 +226,9 @@ details.dcard[open] summary::after{content:"−"}
 
 /* ---------- desktop: everything on one screen ---------- */
 @media (min-width:1024px){
-  #app{grid-template-rows:auto minmax(0,1fr);grid-template-areas:"top" "panes"}
+  #app{grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"top" "panes" "replay"}
+  #replay{flex-direction:row;align-items:center;gap:14px}
+  #replay .rprow:first-child{flex:1}
   #tabs{display:none}
   header{padding:10px 16px}
   #panes{display:grid;grid-template-columns:minmax(0,1fr) 370px;grid-template-rows:minmax(0,1fr) var(--traceH,36vh);grid-template-areas:"map data" "traces laps"}
@@ -312,3 +315,49 @@ body.dropping #dropzone{display:flex}
 .chip.danger{border-color:var(--red);color:var(--red)}
 #addDriver{display:flex;gap:8px}
 #addDriver input{flex:1;min-width:0;height:44px;border-radius:10px;border:1px solid var(--line2);background:var(--bg);padding:0 12px;font-size:15px}
+
+/* ---------- replay ---------- */
+#replay{grid-area:replay;display:flex;flex-direction:column;gap:8px;min-width:0;background:var(--panel);border-top:1px solid var(--line);padding:8px calc(var(--sr) + 12px) 8px calc(var(--sl) + 12px)}
+#replay[hidden]{display:none}
+.rprow{display:flex;align-items:center;gap:10px;min-width:0}
+.rpopts{gap:8px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.rpopts::-webkit-scrollbar{display:none}
+.rpplay{flex:none;width:40px;height:40px;border-radius:50%;border:0;background:var(--rival);color:#1a0712;display:grid;place-items:center;cursor:pointer}
+.rpplay svg{width:20px;height:20px}
+#rpSlider{flex:1;min-width:0;height:28px;margin:0;accent-color:var(--rival)}
+.rptime{flex:none;font-family:var(--mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.rpslot{flex:none;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 2px 0 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-size:12px}
+.rpslot i{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.rpslot select{max-width:150px;height:30px;border:0;background:transparent;color:var(--text);font:inherit;font-size:12px;padding:0 4px}
+.rpslot select option{background:var(--panel2);color:var(--text)}
+.rpslot .tag{margin:0}
+.rpbtn{flex:none;height:28px;padding:0 11px;border-radius:999px;border:1px solid #5b2a45;background:var(--panel2);color:var(--rival);font-size:12px;font-weight:600;cursor:pointer}
+.rpbtn.on{background:var(--rival);color:#1a0712;border-color:var(--rival)}
+
+/* ---------- track library ---------- */
+.libcard{display:flex;flex-direction:column;gap:10px}
+.libhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.libbox{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px;background:var(--panel2);overflow:hidden}
+.libbox .empty{padding:12px}
+.libtrack{border-bottom:1px solid var(--line)}
+.libtrack:last-child{border-bottom:0}
+.libtrack>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:12px;cursor:pointer;list-style:none}
+.libtrack>summary::-webkit-details-marker{display:none}
+.libtrack>summary::after{content:"›";grid-row:1 / span 2;grid-column:2;align-self:center;color:var(--muted);font-size:18px;transition:transform .15s}
+.libtrack[open]>summary::after{transform:rotate(90deg)}
+.lt-name{font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px;min-width:0}
+.lt-live{font-size:10px;font-weight:700;color:var(--green);border:1px solid #1d4d33;border-radius:999px;padding:1px 6px}
+.lt-meta{grid-column:1;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.lt-body{display:flex;flex-direction:column;border-top:1px solid var(--line);background:var(--bg)}
+.lt-driver{padding:8px 12px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.lt-body .svrow{background:transparent}
+.svname{flex:1;min-width:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lt-actions{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--bg)}
+.lt-actions .btn{flex:1}
+#libSheet{max-height:62vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+@media (max-width:520px){
+  header{gap:8px}
+  .pill{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap}
+  .drvsel{max-width:30vw}
+  .rpbtn{padding:0 9px}
+}
