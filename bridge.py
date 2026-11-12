@@ -67,8 +67,8 @@ def layout_for(fmt):
     return LAYOUT_2026 if fmt >= 2026 else LAYOUT_OLD
 
 PKT_MOTION, PKT_SESSION, PKT_LAP = 0, 1, 2
-PKT_PARTICIPANTS, PKT_TELEMETRY, PKT_TIMETRIAL = 4, 6, 14
-USED_PACKETS = frozenset((PKT_MOTION, PKT_SESSION, PKT_LAP, PKT_PARTICIPANTS, PKT_TELEMETRY, PKT_TIMETRIAL))
+PKT_PARTICIPANTS, PKT_TELEMETRY, PKT_HISTORY, PKT_TIMETRIAL = 4, 6, 11, 14
+USED_PACKETS = frozenset((PKT_MOTION, PKT_SESSION, PKT_LAP, PKT_PARTICIPANTS, PKT_TELEMETRY, PKT_HISTORY, PKT_TIMETRIAL))
 
 FIELDS = ["t", "d", "x", "y", "z", "speed", "throttle", "brake", "steer",
           "gear", "rpm", "drs", "fx", "fy", "fz"]
@@ -156,6 +156,7 @@ class State:
         self.prev = {r: None for r in ROLES}
         self.role_idx = {r: None for r in ROLES}
         self.lap_invalid = {r: False for r in ROLES}
+        self.last_before = None                          # the game's "last lap" time when this lap began
         self.lap_start = {r: None for r in ROLES}
         self.prev_sector = None
 
@@ -220,6 +221,8 @@ class State:
                 self._participants(data, b, L)
             elif pid == PKT_TIMETRIAL:
                 self._timetrial(data, b, L)
+            elif pid == PKT_HISTORY:
+                self._history(data, b)
         except struct.error:
             pass  # truncated or unexpected layout - skip this packet
 
@@ -327,11 +330,16 @@ class State:
             prev = self.prev[role]
             if prev is not None:
                 back = prev[1] - d
-                if lapnum != prev[0] or back > max(L * 0.5, 500):
-                    self._finish_lap(role, idx)
-                elif back > 20:                        # flashback / restart: lap is broken
-                    self.buf[role] = []
-                    self.lap_start[role] = None
+                crossed = (prev[1] > L - 300 and d < 300) if L else back > 500   # from the end of the lap to the start
+                if role == "player" and lapnum != prev[0]:
+                    if crossed and lapnum == prev[0] + 1:
+                        self._finish_lap(role, idx, prev[0])
+                    else:
+                        self._drop(role)                  # restart or new session, not a finished lap
+                elif role != "player" and crossed and back > 0:
+                    self._finish_lap(role, idx, None)
+                elif back > 20:                           # restart / flashback / ghost reset: lap is broken
+                    self._drop(role)
             self.prev[role] = (lapnum, d)
             if role == "player":
                 self._learn_sectors(c)
@@ -339,9 +347,12 @@ class State:
                 continue                                # still before the line
             if self.lap_start[role] is None:              # crossed the line: back-date by the distance past it
                 self.lap_start[role] = stime - d / max(c["speed"] / 3.6, 1)
+                if role == "player":
+                    self.last_before = c.get("lastLap")
             clock = round((stime - self.lap_start[role]) * 1000)
             if role == "player":
-                t = c.get("curLap") or clock
+                game = c.get("curLap") or 0
+                t = game if game and abs(game - clock) < 500 else clock
             else:                                         # the game's timer for ghost cars isn't reliable in 2026
                 t = clock
                 c["curLap"] = t
@@ -364,9 +375,12 @@ class State:
                 self.outbox.append({"type": "session", "session": self.session})
         self.prev_sector = sec
 
-    def _finish_lap(self, role, idx):
-        buf, invalid = self.buf[role], self.lap_invalid[role]
+    def _drop(self, role):
         self.buf[role], self.lap_invalid[role], self.lap_start[role] = [], False, None
+
+    def _finish_lap(self, role, idx, lapnum):
+        buf, invalid = self.buf[role], self.lap_invalid[role]
+        self._drop(role)
         if len(buf) < 120:
             return
         L = self.session.get("trackLength") or buf[-1][1]
@@ -374,12 +388,16 @@ class State:
             return                                      # did not cover the whole lap
         last = buf[-1]
         est = last[0] + (L - last[1]) / max(last[5] / 3.6, 1) * 1000
-        exact = None
-        if role == "player":
+        if role == "player":                            # the game's own lap time, once it has crossed the line
             exact = self.cars[idx].get("lastLap")
-        elif self.tt:
-            exact = self.tt["personalBest" if role == "pb" else "rival"]["lapTime"]
-        lap_time = int(exact) if exact and abs(exact - est) < 400 else int(est)
+            if exact and exact == self.last_before:
+                return                                  # the game logged no new lap: a restart, not a finish
+            lap_time = int(exact) if exact and abs(exact - est) < 3000 else int(est)
+        else:                                           # a ghost lap must match the ghost's known lap time
+            exact = self.tt and self.tt["personalBest" if role == "pb" else "rival"]["lapTime"]
+            if not exact or abs(exact - est) > 1000:
+                return                                  # ghost reset by a restart, not a real lap
+            lap_time = int(exact)
         if role != "player":                            # ghosts replay the same lap every time
             prev = next((l for l in reversed(self.laps) if l["role"] == role), None)
             if prev and abs(prev["lapTime"] - lap_time) <= 5:
@@ -390,12 +408,37 @@ class State:
                "lapTime": lap_time, "invalid": invalid,
                "trackId": self.session.get("trackId"),
                "trackName": self.session.get("trackName", ""),
-               "created": time.time(), "samples": buf}
+               "created": time.time(), "lapNum": lapnum, "samples": buf}
         self.laps.append(lap)
         del self.laps[:-self.max_laps]
         self.outbox.append({"type": "lap", "lap": lap})
         self._save(lap)
         print(f"  lap recorded: {ROLE_LABEL[role]:<13} {fmt_lap(lap_time)}{'  (invalid)' if invalid else ''}")
+
+    def _history(self, data, b):
+        """The game's own lap list for the player: confirms whether each lap was valid."""
+        if b + 7 > len(data) or data[b] != self.player_idx:
+            return
+        hist = {}
+        for k in range(min(data[b + 1], 100)):
+            o = b + 7 + k * 14
+            if o + 14 > len(data):
+                break
+            lt = struct.unpack_from("<I", data, o)[0]
+            if lt:
+                hist[k + 1] = (lt, bool(data[o + 13] & 1))
+        for lap in self.laps[-20:]:
+            if lap["role"] != "player" or lap.get("checked") or not lap.get("lapNum"):
+                continue
+            h = hist.get(lap["lapNum"])
+            if not h or abs(h[0] - lap["lapTime"]) > 50:
+                continue
+            lap["checked"] = True
+            if lap["invalid"] != (not h[1]):
+                lap["invalid"] = not h[1]
+                self._save(lap)
+                self.outbox.append({"type": "lapUpdate", "id": lap["id"], "invalid": lap["invalid"]})
+                print(f"  lap {fmt_lap(lap['lapTime'])} is {'invalid' if lap['invalid'] else 'valid'} (game's lap history)")
 
     def _save(self, lap):
         slug = (lap["trackName"] or "track").lower().replace(" ", "-").replace("(", "").replace(")", "")

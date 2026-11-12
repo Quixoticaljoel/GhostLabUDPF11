@@ -63,7 +63,7 @@ function prepLap(lap){
   for (const r of lap.samples){ const d = r[F.d]; if (isFinite(d) && d > last + 0.05){ keep.push(r); last = d; } }
   lap.samples = keep; lap.D = keep.map(r => r[F.d]);
   retime(lap);
-  lap.color = shade(ROLE_COLOR[lap.role] || ROLE_COLOR.import, S.laps.filter(l => l.role === lap.role).length);
+  lap.color = lap.baseColor = shade(ROLE_COLOR[lap.role] || ROLE_COLOR.import, S.laps.filter(l => l.role === lap.role).length);
   return lap;
 }
 function retime(lap){                    // ghost laps saved before the timing fix: rebuild the clock from distance and speed
@@ -416,6 +416,11 @@ function onMessage(m){
       LIB.stale = true;
       if (viewingSaved() && m.lap.trackName && m.lap.trackName !== S.session.trackName) break;
       addLap(m.lap, false); afterLapsChanged(); break;
+    case 'lapUpdate': {
+      const l = S.laps.find(x => !x.imported && x.id === m.id);
+      if (l){ l.invalid = !!m.invalid; renderLaps(); renderReplay(); }
+      LIB.stale = true; break;
+    }
     case 'frame': S.liveAt = performance.now(); if (!S.rp.on) onFrame(m); break;
     case 'status': S.status = m; if (S.admin && m.bridge) S.viewing = m.bridge.driver; updateDetect(); break;
   }
@@ -751,7 +756,7 @@ function carHTML(role, big){
   const steerPos = 50 + clamp(c.steer || 0, -1, 1) * 50;
   const gear = c.gear == null ? '–' : c.gear <= 0 ? (c.gear < 0 ? 'R' : 'N') : c.gear;
   return `<div class="car" style="--c:${ROLE_COLOR[role]}">
-    <div class="top"><b>${ROLE_LABEL[role]}</b><span class="nm">${esc(name)}</span><span class="dl ${dl == null ? '' : dl < 0 ? 'neg' : 'pos'}">${dl == null ? '' : fmtDelta(dl)}</span></div>
+    <div class="top"><b>${esc(c.owner || ROLE_LABEL[role])}</b><span class="nm">${esc(name)}</span><span class="dl ${dl == null ? '' : dl < 0 ? 'neg' : 'pos'}">${dl == null ? '' : fmtDelta(dl)}</span></div>
     <div class="mid"><div class="spd">${c.speed ?? 0}<small>km/h</small></div><div class="gr">${gear}</div>
       <div class="bars"><div class="bar t"><i style="width:${(c.throttle || 0) * 100}%"></i></div><div class="bar b"><i style="width:${(c.brake || 0) * 100}%"></i></div><div class="steer"><i style="left:${steerPos}%"></i></div></div></div>
     <div class="foot"><span>${c.d != null && c.d >= 0 ? Math.round(c.d) + ' m' : 'out lap'}</span>${c.curLap ? `<span>${fmtLap(c.curLap)}</span>` : ''}
@@ -800,7 +805,7 @@ function renderLaps(){
     const on = S.shown.has(l.id);
     return `<div class="lap ${on ? 'sel' : ''}" data-id="${l.id}">
       <label><input type="checkbox" ${on ? 'checked' : ''} data-act="show" aria-label="Show lap"></label>
-      <div><div class="l1"><span class="sw" style="background:${l.color}"></span><span class="role">${ROLE_SHORT[l.role] || 'Lap'}</span><span class="time">${fmtLap(l.lapTime)}</span>${l.invalid ? '<span class="inv">INVALID</span>' : ''}</div>
+      <div><div class="l1"><span class="sw" style="background:${l.color}"></span><span class="role">${multiOwner() && l.owner && (l.role === 'player' || !ROLE_COLOR[l.role]) ? esc(l.owner) : ROLE_SHORT[l.role] || 'Lap'}</span><span class="time">${fmtLap(l.lapTime)}</span>${l.invalid ? '<span class="inv">INVALID</span>' : ''}</div>
         <div class="l2">${l.imported ? '<span class="imp">imported</span>' : ''}${esc(l.trackName && S.session.trackName && l.trackName !== S.session.trackName ? l.trackName + ' · ' : '')}${esc(l.name && l.name !== ROLE_LABEL[l.role] ? l.name + ' · ' : '')}${sec}</div></div>
       <div class="btns"><button class="ref ${S.refId === l.id ? 'on' : ''}" data-act="ref">REF</button><button class="cmp ${S.cmpId === l.id ? 'on' : ''}" data-act="cmp">CMP</button><button data-act="csv" aria-label="Download CSV">CSV</button></div>
     </div>`;
@@ -858,7 +863,7 @@ async function makeExportFile(laps){
     format: LAPFILE, version: 1, app: 'Ghost Lab', exported: new Date().toISOString(),
     session: Object.assign({trackId: first.trackId ?? S.session.trackId ?? null, trackName: name}, trackInfoOf(first) || {}),
     fields: FIELDS,
-    laps: laps.map(l => ({role: l.role, name: l.name || '', lapTime: l.lapTime, invalid: !!l.invalid,
+    laps: laps.map(l => ({role: l.role, name: l.name || '', owner: l.owner || '', lapTime: l.lapTime, invalid: !!l.invalid,
       trackId: l.trackId ?? S.session.trackId ?? null, trackName: l.trackName || S.session.trackName || '',
       created: l.created || null, trackInfo: trackInfoOf(l), samples: l.samples})),
   };
@@ -937,7 +942,7 @@ function addImported(data, tot){
   for (const raw of data.laps){
     if (!raw || !Array.isArray(raw.samples)){ tot.bad++; continue; }
     const samples = raw.samples.map(r => order.map(i => i >= 0 ? (+r[i] || 0) : 0));
-    const lap = {id: 'imp' + (++S.importSeq), role: ROLE_COLOR[raw.role] ? raw.role : 'import', name: raw.name || '', imported: true,
+    const lap = {id: 'imp' + (++S.importSeq), role: ROLE_COLOR[raw.role] ? raw.role : 'import', name: raw.name || '', owner: raw.owner || raw.name || '', imported: true,
       lapTime: +raw.lapTime || (samples.length ? samples[samples.length - 1][F.t] : 0), invalid: !!raw.invalid,
       trackId: raw.trackId ?? null, trackName: raw.trackName || (data.session && data.session.trackName) || '',
       created: raw.created || null, trackInfo: raw.trackInfo || pickTrackInfo(data.session), samples};
@@ -1472,7 +1477,7 @@ function tick(now){
 // =====================================================================
 // Track library: every saved lap on the server, by track
 // =====================================================================
-const LIB = {data: null, stale: true, busy: false, open: new Set()};
+const LIB = {data: null, stale: true, busy: false, open: new Set(), filter: {}};
 async function loadLibrary(){
   if (LIB.busy || Conn.state !== 'open') return;
   LIB.busy = true; LIB.stale = false;
@@ -1485,15 +1490,20 @@ async function loadLibrary(){
   if ($('libSheet')) renderLibrary($('libSheet'));
 }
 setInterval(() => { if (Conn.state === 'open' && (S.view === 'detect' || $('libSheet'))) LIB.stale = true; }, 60000);
-function libDefaults(t){                  // each driver's fastest lap, plus the fastest PB and rival ghost laps
-  const pick = new Set(), best = new Map(), byTime = (a, b) => (a.invalid - b.invalid) || ((a.lapTime || 9e9) - (b.lapTime || 9e9));
-  const idx = [...t.laps.keys()].sort((a, b) => byTime(t.laps[a], t.laps[b]));
-  for (const i of idx){
+function libDefaults(t, idxs){            // each driver's fastest lap, plus the fastest PB and rival ghost laps
+  const pick = new Set(), seen = new Set(), byTime = (a, b) => (a.invalid - b.invalid) || ((a.lapTime || 9e9) - (b.lapTime || 9e9));
+  for (const i of [...idxs].sort((a, b) => byTime(t.laps[a], t.laps[b]))){
     const l = t.laps[i], k = l.role === 'player' || !ROLE_COLOR[l.role] ? 'p|' + l.driver : l.role;
-    if (!best.has(k)){ best.set(k, i); pick.add(i); }
+    if (!seen.has(k)){ seen.add(k); pick.add(i); }
   }
   return pick;
 }
+const dayKey = l => l.modified ? new Date(l.modified * 1000).toDateString() : '';
+const dayName = k => {
+  if (!k) return 'Unknown day';
+  const d = new Date(k), today = new Date().toDateString(), yest = new Date(Date.now() - 864e5).toDateString();
+  return k === today ? 'Today' : k === yest ? 'Yesterday' : d.toLocaleDateString(undefined, {weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'});
+};
 function renderLibrary(box){
   const d = LIB.data;
   if (!d){ box.innerHTML = '<div class="empty">Loading your tracks…</div>'; return; }
@@ -1510,18 +1520,43 @@ function renderLibrary(box){
 function fillTrack(det){
   const t = LIB.data.tracks[+det.dataset.ti], body = det.querySelector('.lt-body');
   if (!t || body.dataset.done) return; body.dataset.done = '1';
-  const def = libDefaults(t), groups = new Map();
-  t.laps.forEach((l, i) => { const g = LIB.data.admin ? (l.driver || 'Driver') : ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); });
-  const row = i => { const l = t.laps[i]; return `<label class="svrow"><input type="checkbox" value="${i}"${def.has(i) ? ' checked' : ''}>
+  const drivers = [...new Set(t.laps.map(l => l.driver || ''))].sort((a, b) => a.localeCompare(b));
+  const pickDriver = LIB.data.admin && drivers.length > 1;
+  const newestOf = drv => [...t.laps].filter(l => drv === '*' || (l.driver || '') === drv).sort((a, b) => b.modified - a.modified)[0];
+  const st = LIB.filter[t.trackName] || (LIB.filter[t.trackName] = {});
+  if (st.driver == null) st.driver = pickDriver ? (newestOf('*').driver || '') : '*';
+  if (st.day == null) st.day = dayKey(newestOf(st.driver) || t.laps[0]);
+  const n = (k, w) => `${k} ${w}${k === 1 ? '' : 's'}`;
+  body.innerHTML = `<div class="lt-filters">
+      ${pickDriver ? `<select class="chip lt-drv" aria-label="Driver"><option value="*">All drivers (${n(t.laps.length, 'lap')})</option>${drivers.map(d => `<option value="${esc(d)}">${esc(d || 'Driver')} (${t.laps.filter(l => (l.driver || '') === d).length})</option>`).join('')}</select>` : ''}
+      <select class="chip lt-day" aria-label="Day"></select></div>
+    <div class="lt-rows"></div>
+    <div class="lt-actions"><button class="btn primary lt-open" type="button"></button></div>`;
+  const drvSel = body.querySelector('.lt-drv'), daySel = body.querySelector('.lt-day'), rowsEl = body.querySelector('.lt-rows'), btn = body.querySelector('.lt-open');
+  const row = i => { const l = t.laps[i]; return `<label class="svrow"><input type="checkbox" value="${i}">
     <span class="sw" style="background:${ROLE_COLOR[l.role] || ROLE_COLOR.import}"></span><span class="svrole">${ROLE_SHORT[l.role] || 'Lap'}</span>
     <span class="svtime">${fmtLap(l.lapTime)}${l.invalid ? ' <i class="inv">INV</i>' : ''}</span>
-    <span class="svname">${esc(l.name && l.name !== ROLE_LABEL[l.role] ? l.name : '')}</span><span class="svdate">${fmtDate(l.modified)}</span></label>`; };
-  body.innerHTML = [...groups].map(([g, list]) => (g ? `<div class="lt-driver">${esc(g)}</div>` : '') + list.map(row).join('')).join('') +
-    `<div class="lt-actions"><button class="btn primary lt-open" type="button"></button></div>`;
-  const btn = body.querySelector('.lt-open');
-  const count = () => { const k = body.querySelectorAll('input:checked').length; btn.disabled = !k; btn.textContent = k ? `Open ${k} lap${k === 1 ? '' : 's'}` : 'Pick some laps'; };
-  body.addEventListener('change', count); count();
-  btn.onclick = () => openTrack(t, [...body.querySelectorAll('input:checked')].map(i => t.laps[+i.value]), btn);
+    <span class="svname">${esc(l.name && l.name !== ROLE_LABEL[l.role] ? l.name : '')}</span><span class="svdate">${new Date(l.modified * 1000).toLocaleTimeString(undefined, {hour: '2-digit', minute: '2-digit'})}</span></label>`; };
+  const count = () => { const k = rowsEl.querySelectorAll('input:checked').length; btn.disabled = !k; btn.textContent = k ? `Open ${n(k, 'lap')}` : 'Pick some laps'; };
+  function draw(){
+    if (drvSel) drvSel.value = st.driver;
+    const mine = t.laps.map((l, i) => i).filter(i => st.driver === '*' || (t.laps[i].driver || '') === st.driver);
+    const days = [...new Set(mine.map(i => dayKey(t.laps[i])))].sort((a, b) => (b ? Date.parse(b) : 0) - (a ? Date.parse(a) : 0));
+    if (st.day !== '*' && !days.includes(st.day)) st.day = days[0] ?? '*';
+    daySel.innerHTML = `<option value="*">All days (${mine.length})</option>` + days.map(k => `<option value="${esc(k)}">${esc(dayName(k))} (${mine.filter(i => dayKey(t.laps[i]) === k).length})</option>`).join('');
+    daySel.value = st.day;
+    const shown = mine.filter(i => st.day === '*' || dayKey(t.laps[i]) === st.day);
+    const def = libDefaults(t, shown), groups = new Map();
+    shown.forEach(i => { const g = st.driver === '*' && pickDriver ? (t.laps[i].driver || 'Driver') : ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(i); });
+    rowsEl.innerHTML = shown.length ? [...groups].map(([g, list]) => (g ? `<div class="lt-driver">${esc(g)}</div>` : '') + list.map(row).join('')).join('') : '<div class="empty">No laps for this choice.</div>';
+    rowsEl.querySelectorAll('input').forEach(inp => { inp.checked = def.has(+inp.value); });
+    count();
+  }
+  if (drvSel) drvSel.onchange = () => { st.driver = drvSel.value; st.day = dayKey(newestOf(st.driver) || {}); draw(); };
+  daySel.onchange = () => { st.day = daySel.value; draw(); };
+  rowsEl.addEventListener('change', count);
+  btn.onclick = () => openTrack(t, [...rowsEl.querySelectorAll('input:checked')].map(i => t.laps[+i.value]), btn);
+  draw();
 }
 function bindLibrary(box){
   box.addEventListener('toggle', e => {
@@ -1551,7 +1586,7 @@ async function openTrack(t, items, btn){
       const r = await fetch(apiUrl(it.url), {cache: 'no-store'});
       if (!r.ok) throw new Error(r.status);
       const data = parseLapFile(await r.text(), it.name || 'lap');
-      if (data){ data.laps.forEach(l => { if (it.driver && LIB.data.admin) l.name = `${it.driver}${l.role === 'player' ? '' : ' · ' + (ROLE_SHORT[l.role] || '')}`; }); addImported(data, tot); }
+      if (data){ data.laps.forEach(l => { if (it.driver && LIB.data.admin){ l.owner = it.driver; l.name = `${it.driver}${l.role === 'player' ? '' : ' · ' + (ROLE_SHORT[l.role] || '')}`; } }); addImported(data, tot); }
       else tot.failed.push(it.name || 'lap');
     } catch { tot.failed.push(it.name || 'lap'); }
   }));
@@ -1583,13 +1618,23 @@ function rpCarAt(lap, t){
   const cur = clamp(t, 0, T[n - 1]), sec = lap.sectors;
   return {x: v('x'), y: v('y'), z: v('z'), fx: v('fx'), fy: v('fy'), fz: v('fz'), d: v('d'),
     speed: Math.round(v('speed')), throttle: v('throttle'), brake: v('brake'), steer: v('steer'), rpm: Math.round(v('rpm')),
-    gear: near('gear'), drs: near('drs'), curLap: cur || null, name: rpName(lap),
+    gear: near('gear'), drs: near('drs'), curLap: cur || null,
+    owner: lap.owner && (lap.role === 'player' || !ROLE_COLOR[lap.role]) ? lap.owner : '',
+    name: lap.owner && (lap.role === 'player' || !ROLE_COLOR[lap.role]) ? fmtLap(lap.lapTime) : rpName(lap),
     sector: sec ? (cur < sec[0] ? 0 : cur < sec[0] + sec[1] ? 1 : 2) : 0, s1: sec ? sec[0] : 0, s2: sec ? sec[1] : 0};
 }
 const rpLaps = () => ROLES.map(r => lapById(RP.slots[r])).filter(Boolean);
+function rpOrder(){                       // saved laps: each driver's fastest, then the fastest PB and rival ghosts
+  const fast = (a, b) => (a.invalid - b.invalid) || (a.lapTime - b.lapTime), sorted = [...S.laps].sort(fast), owners = new Map();
+  for (const l of sorted) if (l.role === 'player' || !ROLE_COLOR[l.role]){ const k = l.owner || l.name || 'you'; if (!owners.has(k)) owners.set(k, l); }
+  const list = [...owners.values()];
+  for (const r of ['pb', 'rival']){ const g = sorted.find(l => l.role === r); if (g) list.push(g); }
+  return list;
+}
 function rpPick(){                        // newest lap of each car, unless the viewer already chose
   for (const r of ROLES) if (!lapById(RP.slots[r])) RP.slots[r] = null;
   if (ROLES.some(r => RP.slots[r] != null)) return;
+  if (viewingSaved()){ rpOrder().slice(0, 3).forEach((l, i) => { RP.slots[ROLES[i]] = l.id; }); return; }
   const fast = (a, b) => (a.invalid - b.invalid) || (a.lapTime - b.lapTime);
   const latest = role => viewingSaved() ? S.laps.filter(l => l.role === role).sort(fast)[0]   // a saved track: fastest
     : [...S.laps].reverse().find(l => l.role === role);                                             // live: newest
@@ -1598,6 +1643,19 @@ function rpPick(){                        // newest lap of each car, unless the 
     [...S.laps].sort((a, b) => a.lapTime - b.lapTime).slice(0, 3).forEach((l, i) => { RP.slots[ROLES[i]] = l.id; });
 }
 function rpDur(){ RP.dur = Math.max(0, ...rpLaps().map(lapEnd)); if (RP.t > RP.dur) RP.t = RP.dur; }
+function setCarLabel(role, text){
+  const car = cars[role], old = car.userData.label;
+  if (!old || car.userData.labelText === text) return;
+  const lb = makeLabel(text, ROLE_COLOR[role]); lb.position.copy(old.position); lb.visible = old.visible;
+  car.remove(old); old.material.map.dispose(); old.material.dispose();
+  car.add(lb); car.userData.label = lb; car.userData.labelText = text;
+}
+function rpColours(){                     // the lap in each car takes that car's colour
+  const slotOf = new Map(ROLES.map(r => [RP.slots[r], r]));
+  for (const l of S.laps) l.color = RP.on && slotOf.has(l.id) ? ROLE_COLOR[slotOf.get(l.id)] : (l.baseColor || l.color);
+  for (const r of ROLES){ const l = RP.on && lapById(RP.slots[r]); setCarLabel(r, l && l.owner && (l.role === 'player' || !ROLE_COLOR[l.role]) ? l.owner : ROLE_LABEL[r]); }
+}
+function multiOwner(){ return new Set(S.laps.map(l => l.owner).filter(Boolean)).size > 1; }
 function rpApply(){
   const m = {replay: true, cars: {}};
   for (const r of ROLES){ const l = lapById(RP.slots[r]), c = l && rpCarAt(l, RP.t); if (c) m.cars[r] = c; }
@@ -1639,7 +1697,7 @@ function rpEnter(auto){
   rpLaps().forEach(l => S.shown.add(l.id));
   for (const r of ROLES) cars[r].userData.init = false;
   S.hoverD = null; $('replay').hidden = false;
-  rebuildLines(); colorTrack(); renderLaps(); resize();
+  rpColours(); rebuildLines(); colorTrack(); renderLaps(); resize();
   rpApply();
 }
 function rpExit(manual){
@@ -1651,6 +1709,7 @@ function rpExit(manual){
   }
   $('replay').hidden = true;
   S.live = {}; for (const r of ROLES){ cars[r].visible = false; cars[r].userData.init = false; }
+  rpColours(); rebuildLines(); renderLaps();
   renderReplay(); resize(); S.chartsDirty = true;
 }
 function rpSeekD(d){                      // tap the traces: jump to where the lead car was at that distance
@@ -1683,7 +1742,7 @@ $('rpSpeed').onchange = e => { RP.speed = +e.target.value || 1; RP.touched = tru
 for (const r of ROLES) $('rpSlot-' + r).onchange = e => {
   const id = idOf(e.target.value); RP.slots[r] = id; RP.touched = true;
   if (id != null) S.shown.add(id);
-  rpOptKey = ''; renderReplay(); rebuildLines(); renderLaps(); RP.dirty = true; S.chartsDirty = true;
+  rpOptKey = ''; renderReplay(); rpColours(); rebuildLines(); colorTrack(); renderLaps(); RP.dirty = true; S.chartsDirty = true;
 };
 $('rpRef').onchange = e => {
   const id = idOf(e.target.value); S.refId = id; RP.touched = true;

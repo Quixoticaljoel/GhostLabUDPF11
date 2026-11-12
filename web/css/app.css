@@ -361,3 +361,7 @@ body.dropping #dropzone{display:flex}
   .drvsel{max-width:30vw}
   .rpbtn{padding:0 9px}
 }
+.lt-filters{display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.lt-filters select{flex:1 1 140px;min-width:0;max-width:100%}
+.lt-rows{display:flex;flex-direction:column}
+.lt-rows .empty{padding:12px}
